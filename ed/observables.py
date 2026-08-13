@@ -9,6 +9,7 @@ from .config import NUM_SITES, SPINS, NUM_ORBITALS, NUM_ELECTRONS
 from .basis import BasisOperations, FockBasis
 from .lattice import HoneycombLattice
 from .ed_solver import ExactDiagonalizationSolver
+from .fast_ops import build_orbital_pair_template
 
 
 class ObservableCalculator:
@@ -23,6 +24,19 @@ class ObservableCalculator:
 
         # Precompute operator diagonal vectors for ultra-fast expectations
         self._site_density_ops = self._precompute_site_densities()
+
+        # Lazy cache of orbital-pair connectivity templates (see fast_ops),
+        # used to vectorize compute_single_particle_density_matrix. Keyed by
+        # (orb_i, orb_j); built on first use and reused across ground states.
+        self._pair_template_cache = {}
+
+    def _get_pair_template(self, orb_i: int, orb_j: int):
+        key = (orb_i, orb_j)
+        template = self._pair_template_cache.get(key)
+        if template is None:
+            template = build_orbital_pair_template(self.basis.basis_states, orb_i, orb_j)
+            self._pair_template_cache[key] = template
+        return template
 
     def _precompute_site_densities(self) -> np.ndarray:
         """
@@ -131,35 +145,38 @@ class ObservableCalculator:
     def compute_single_particle_density_matrix(self, psi_gs: np.ndarray) -> np.ndarray:
         """
         Compute single-particle density matrix rho_ij = <c_i^dagger c_j>.
+
+        Vectorized: rho[j, i] = sum over bra states connected to a ket state
+        by removing orbital i and adding orbital j, weighted by the
+        fermionic sign and psi_bra * conj(psi_ket). This is exactly the
+        same physics as the original per-state, per-orbital-pair Python
+        loop, but the "which bra connects to which ket, with what sign"
+        structure is precomputed once per (i, j) pair (fast_ops,
+        NUM_ORBITALS^2 pairs total) and reused across ground states, and
+        each pair's contribution is a single vectorized numpy reduction
+        instead of an O(fock_dim) inner loop.
         """
         self._check_normalized(psi_gs, label="psi_gs (compute_single_particle_density_matrix)")
 
         rho = np.zeros((NUM_ORBITALS, NUM_ORBITALS), dtype=np.complex128)
 
-        for state_bra_idx, state_bra in enumerate(self.basis.basis_states):
-            psi_bra = psi_gs[state_bra_idx]
+        # Diagonal: rho_ii = <n_i>
+        prob_amp = psi_gs
+        for orb in range(NUM_ORBITALS):
+            site, spin = orb // 2, orb % 2
+            occ_mask = self._site_density_ops[site, spin].astype(bool)
+            rho[orb, orb] = np.sum(occ_mask * np.abs(prob_amp) ** 2)
 
-            if abs(psi_bra) < 1e-15:
-                continue
-
-            for i in range(NUM_ORBITALS):
-                if not BasisOperations.is_occupied(state_bra, i):
+        # Off-diagonal: rho[j, i] = <c_j^dagger c_i>, i != j
+        for i in range(NUM_ORBITALS):
+            for j in range(NUM_ORBITALS):
+                if i == j:
                     continue
-                state_temp = BasisOperations.set_unoccupied(state_bra, i)
-
-                for j in range(NUM_ORBITALS):
-                    if BasisOperations.is_occupied(state_temp, j):
-                        continue
-                    state_ket = BasisOperations.set_occupied(state_temp, j)
-
-                    state_ket_idx = self.basis.state_to_index(state_ket)
-                    if state_ket_idx == -1:
-                        continue
-
-                    sign = BasisOperations.fermionic_sign(state_bra, i, j)
-                    psi_ket = psi_gs[state_ket_idx]
-
-                    rho[j, i] += sign * psi_bra * np.conj(psi_ket)
+                # matches original loop's naming: i = orbital removed from
+                # bra, j = orbital added to make ket -> pass (orb_i=j, orb_j=i)
+                # to match fermionic_sign(state_bra, i, j) convention exactly.
+                bra_idx, ket_idx, sign = self._get_pair_template(j, i)
+                rho[j, i] = np.sum(sign * psi_gs[bra_idx] * np.conj(psi_gs[ket_idx]))
 
         trace = np.trace(rho).real
         expected_n = NUM_ELECTRONS  # 12 at true half-filling (see config.py)

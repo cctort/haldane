@@ -17,8 +17,7 @@ import time
 from mpi4py import MPI
 
 from ed.config import (
-    DELTA_RANGE, U_RANGE, V_RANGE, DATA_DIR, RESULTS_FILE,
-    CHECKPOINT_INTERVAL, VERBOSE, print_config
+    DELTA_RANGE, U_RANGE, V_RANGE, DATA_DIR, RESULTS_FILE, VERBOSE, print_config
 )
 from ed.lattice import get_lattice
 from ed.hamiltonian import HaldaneHubbardHamiltonian
