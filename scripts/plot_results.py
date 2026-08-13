@@ -1,249 +1,484 @@
-"""
-Plot phase diagrams and observables.
+import sys
+from pathlib import Path
 
-Reproduces figures similar to those in the paper.
-"""
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 
+import re
 import numpy as np
 import matplotlib.pyplot as plt
 import h5py
-from pathlib import Path
-from typing import Dict, Tuple, Optional
 
-from src.config import DATA_DIR
+from ed.config import DATA_DIR
+from matplotlib.colors import ListedColormap, BoundaryNorm
+
+IMAGES_DIR = ROOT / "images"
+IMAGES_DIR.mkdir(exist_ok=True)
+
+plt.rcParams.update({
+    "text.usetex": True,
+    "font.family": "serif",
+    "font.serif": ["Computer Modern"],
+    "axes.labelsize": 18,
+    "axes.titlesize": 20,
+    "xtick.labelsize": 16,
+    "ytick.labelsize": 16,
+    "legend.fontsize": 15,
+})
 
 
 class PhaseDiagramPlotter:
-    """Visualize phase diagram results."""
-    
-    def __init__(self, results_file: str = None):
-        """
-        Initialize plotter.
-        
-        Args:
-            results_file: Path to HDF5 results file
-        """
+
+    def __init__(self, results_file=None):
         if results_file is None:
             results_file = Path(DATA_DIR) / "phase_diagram.h5"
-        
+
         self.results_file = Path(results_file)
         self.results = self._load_results()
-    
-    def _load_results(self) -> Dict:
-        """Load results from HDF5 file."""
+
+    def _load_results(self):
         if not self.results_file.exists():
-            print(f"Warning: Results file not found at {self.results_file}")
             return {}
-        
+
         results = {}
-        with h5py.File(self.results_file, 'r') as f:
+
+        with h5py.File(self.results_file, "r") as f:
             for key in f.keys():
                 group = f[key]
-                data = {attr: group.attrs[attr] for attr in group.attrs}
-                results[key] = data
-        
+                results[key] = {
+                    name: group.attrs[name]
+                    for name in group.attrs
+                }
+
         return results
-    
-    def extract_phase_diagram_delta_u(self, v: float = 0.0) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """
-        Extract (Δ, U) phase diagram data.
-        
-        Returns:
-            (delta_values, u_values, chern_grid)
-        """
-        if not self.results:
-            print("No results loaded.")
-            return None, None, None
-        
-        # Collect all points for this V
-        points = {}
+
+    def _parse_key(self, key):
+        patterns = [
+            r"[Dd]elta[_=]?([-+]?\d*\.?\d+).*?[Uu][_=]?([-+]?\d*\.?\d+).*?[Vv][_=]?([-+]?\d*\.?\d+)",
+            r"[Dd][_=]?([-+]?\d*\.?\d+).*?[Uu][_=]?([-+]?\d*\.?\d+).*?[Vv][_=]?([-+]?\d*\.?\d+)",
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, key)
+
+            if match:
+                return tuple(float(x) for x in match.groups())
+
+        return None
+
+    def _attr(self, data, names):
+        for name in names:
+            if name in data:
+                return float(data[name])
+
+        return None
+
+    def _get_points(self):
+        points = []
+
         for key, data in self.results.items():
-            # Parse key: delta_X.XXX_U_X.XXX_V_X.XXX
-            parts = key.split('_')
-            try:
-                delta = float(parts[1])
-                u = float(parts[3])
-                v_val = float(parts[5])
-                
-                if abs(v_val - v) < 0.01:  # Match V
-                    points[(delta, u)] = data['Chern_int']
-            except (IndexError, ValueError):
-                continue
-        
-        if not points:
-            print(f"No points found for V={v}")
-            return None, None, None
-        
-        # Create grid
-        deltas = sorted(set(d for d, u in points.keys()))
-        us = sorted(set(u for d, u in points.keys()))
-        
-        chern_grid = np.zeros((len(deltas), len(us)))
-        for i, delta in enumerate(deltas):
-            for j, u in enumerate(us):
-                chern_grid[i, j] = points.get((delta, u), np.nan)
-        
-        return np.array(deltas), np.array(us), chern_grid
-    
-    def extract_phase_diagram_u_v(self, delta: float = 0.0) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """
-        Extract (U, V) phase diagram data.
-        
-        Returns:
-            (u_values, v_values, chern_grid)
-        """
-        if not self.results:
-            print("No results loaded.")
-            return None, None, None
-        
-        # Collect all points for this Δ
-        points = {}
-        for key, data in self.results.items():
-            parts = key.split('_')
-            try:
-                delta_val = float(parts[1])
-                u = float(parts[3])
-                v = float(parts[5])
-                
-                if abs(delta_val - delta) < 0.01:  # Match Δ
-                    points[(u, v)] = data['Chern_int']
-            except (IndexError, ValueError):
-                continue
-        
-        if not points:
-            print(f"No points found for Δ={delta}")
-            return None, None, None
-        
-        # Create grid
-        us = sorted(set(u for u, v in points.keys()))
-        vs = sorted(set(v for u, v in points.keys()))
-        
-        chern_grid = np.zeros((len(us), len(vs)))
-        for i, u in enumerate(us):
-            for j, v in enumerate(vs):
-                chern_grid[i, j] = points.get((u, v), np.nan)
-        
-        return np.array(us), np.array(vs), chern_grid
-    
-    def plot_phase_diagram_delta_u(self, v: float = 0.0, figsize: Tuple = (10, 8)):
-        """
-        Plot (Δ, U) phase diagram at fixed V.
-        
-        Reproduces Fig. 1(a)
-        """
-        deltas, us, chern_grid = self.extract_phase_diagram_delta_u(v=v)
-        
-        if chern_grid is None:
-            return None
-        
-        fig, ax = plt.subplots(figsize=figsize)
-        
-        # Create custom colormap for Chern number
-        colors = ['white', 'yellow', 'lightgreen', 'lightblue', 'lightcoral', 'black']
-        chern_values = [0, 1, 2, 3, 4, 5]
-        
-        # Plot as image
-        im = ax.imshow(
-            chern_grid.T,
-            origin='lower',
-            extent=[deltas[0], deltas[-1], us[0], us[-1]],
-            cmap='tab10',
-            aspect='auto',
-            interpolation='nearest'
+            parsed = self._parse_key(key)
+
+            if parsed is not None:
+                delta, u, v = parsed
+
+            else:
+                delta = self._attr(data, ["Delta", "delta", "Delta/t", "delta/t"])
+                u = self._attr(data, ["U", "u", "U/t", "u/t"])
+                v = self._attr(data, ["V", "v", "V/t", "v/t"])
+
+                if delta is None or u is None or v is None:
+                    continue
+
+            chern = self._attr(data, ["Chern_int", "chern", "Chern"])
+            cdw = self._attr(data, ["CDW", "cdw", "CDW_structure_factor", "cdw_structure_factor"])
+            sdw = self._attr(data, ["SDW", "sdw", "SDW_structure_factor", "sdw_structure_factor"])
+
+            points.append({
+                "delta": delta,
+                "u": u,
+                "v": v,
+                "chern": chern,
+                "cdw": cdw,
+                "sdw": sdw,
+            })
+
+        return points
+
+    def _delta_u(self, v):
+        return [
+            p for p in self._get_points()
+            if np.isclose(p["v"], v)
+        ]
+
+    def _u_v(self, delta):
+        return [
+            p for p in self._get_points()
+            if np.isclose(p["delta"], delta)
+        ]
+
+    def _make_grid(self, points, y_key, value_key):
+        xs = np.array(sorted(set(p["u"] for p in points)))
+        ys = np.array(sorted(set(p[y_key] for p in points)))
+
+        grid = np.full(
+            (len(ys), len(xs)),
+            np.nan
         )
-        
-        # Add contour lines for phase boundaries
-        contours = ax.contour(deltas, us, chern_grid.T, levels=[0.5, 1.5, 2.5], colors='black', linewidths=0.5)
-        
-        ax.set_xlabel('Staggered potential Δ/t', fontsize=12)
-        ax.set_ylabel('Hubbard interaction U/t', fontsize=12)
-        ax.set_title(f'Phase diagram: Chern number C(Δ, U) at V={v}', fontsize=14)
-        
-        cbar = plt.colorbar(im, ax=ax, label='Chern number C')
-        
-        fig.tight_layout()
-        return fig
-    
-    def plot_phase_diagram_u_v(self, delta: float = 0.0, figsize: Tuple = (10, 8)):
+
+        for p in points:
+            i = np.argmin(np.abs(ys - p[y_key]))
+            j = np.argmin(np.abs(xs - p["u"]))
+
+            if p[value_key] is not None:
+                grid[i, j] = p[value_key]
+
+        return xs, ys, grid
+
+    def _nearest_grid(self, points, y_key, value_key, nx=500, ny=500):
         """
-        Plot (U, V) phase diagram at fixed Δ.
-        
-        Reproduces Fig. 1(b)
+        Construct a dense nearest-neighbour grid directly from the
+        actual calculated scatter points.
+
+        Every location is assigned the value of the closest
+        calculated point.
         """
-        us, vs, chern_grid = self.extract_phase_diagram_u_v(delta=delta)
-        
-        if chern_grid is None:
-            return None
-        
-        fig, ax = plt.subplots(figsize=figsize)
-        
-        # Plot as image
-        im = ax.imshow(
-            chern_grid.T,
-            origin='lower',
-            extent=[us[0], us[-1], vs[0], vs[-1]],
-            cmap='tab10',
-            aspect='auto',
-            interpolation='nearest'
+
+        x_points = np.array([
+            p["u"] for p in points
+        ])
+
+        y_points = np.array([
+            p[y_key] for p in points
+        ])
+
+        values = np.array([
+            p[value_key] for p in points
+        ])
+
+        x_grid = np.linspace(
+            x_points.min(),
+            x_points.max(),
+            nx,
         )
-        
-        # Add contour lines
-        contours = ax.contour(us, vs, chern_grid.T, levels=[0.5, 1.5, 2.5], colors='black', linewidths=0.5)
-        
-        ax.set_xlabel('Hubbard interaction U/t', fontsize=12)
-        ax.set_ylabel('Coulomb interaction V/t', fontsize=12)
-        ax.set_title(f'Phase diagram: Chern number C(U, V) at Δ={delta}', fontsize=14)
-        
-        cbar = plt.colorbar(im, ax=ax, label='Chern number C')
-        
+
+        y_grid = np.linspace(
+            y_points.min(),
+            y_points.max(),
+            ny,
+        )
+
+        X, Y = np.meshgrid(
+            x_grid,
+            y_grid,
+        )
+
+        distances = (
+            (X[..., None] - x_points[None, None, :]) ** 2
+            + (Y[..., None] - y_points[None, None, :]) ** 2
+        )
+
+        nearest = np.argmin(
+            distances,
+            axis=2,
+        )
+
+        grid = values[nearest]
+
+        return x_grid, y_grid, grid
+
+    def _plot_observable(self, points, y_key, value_key, ylabel, title, filename, cmap="hot", interpolation="nearest"):
+        points = [
+            p for p in points
+            if p[value_key] is not None
+        ]
+
+        if not points:
+            return
+
+        values = np.array([
+            p[value_key]
+            for p in points
+        ])
+
+        vmin = np.nanmin(values)
+        vmax = np.nanmax(values)
+
+        if np.isclose(vmin, vmax):
+            eps = max(abs(vmin) * 0.01, 1e-12)
+            vmin -= eps
+            vmax += eps
+
+        fig, ax = plt.subplots(
+            figsize=(10, 8)
+        )
+
+        if interpolation == "nearest":
+            xs, ys, grid = self._nearest_grid(
+                points,
+                y_key,
+                value_key,
+            )
+
+            ax.imshow(
+                grid,
+                origin="lower",
+                extent=[
+                    xs[0],
+                    xs[-1],
+                    ys[0],
+                    ys[-1],
+                ],
+                aspect="auto",
+                interpolation="nearest",
+                cmap=cmap,
+                vmin=vmin,
+                vmax=vmax,
+                zorder=1,
+            )
+
+        elif interpolation in ("bilinear", "bicubic"):
+            xs, ys, grid = self._make_grid(
+                points,
+                y_key,
+                value_key,
+            )
+
+            ax.imshow(
+                grid,
+                origin="lower",
+                extent=[
+                    xs[0],
+                    xs[-1],
+                    ys[0],
+                    ys[-1],
+                ],
+                aspect="auto",
+                interpolation=interpolation,
+                cmap=cmap,
+                vmin=vmin,
+                vmax=vmax,
+                zorder=1,
+            )
+
+        else:
+            raise ValueError(
+                f"Unknown interpolation method: {interpolation}"
+            )
+
+        scatter = ax.scatter(
+            [p["u"] for p in points],
+            [p[y_key] for p in points],
+            c=values,
+            cmap=cmap,
+            vmin=vmin,
+            vmax=vmax,
+            s=65,
+            edgecolors="black",
+            linewidths=0.8,
+            zorder=4,
+        )
+
+        ax.set_xlabel(
+            r"$U/t$"
+        )
+
+        ax.set_ylabel(
+            ylabel
+        )
+
+        ax.set_title(
+            title,
+            pad=12,
+        )
+
+        cbar = fig.colorbar(
+            scatter,
+            ax=ax,
+        )
+
+        cbar.set_label(
+            rf"${value_key.upper()}$",
+            fontsize=18,
+        )
+
+        cbar.ax.tick_params(
+            labelsize=16
+        )
+
         fig.tight_layout()
-        return fig
-    
-    def plot_structure_factors(self, delta: float, u: float, v: float = 0.0, figsize: Tuple = (12, 5)):
-        """
-        Plot CDW and SDW structure factors around a point.
-        
-        Useful for understanding phases near a specific parameter set.
-        """
-        # TODO: Extract and plot CDW/SDW for a grid around (delta, u)
-        pass
-    
-    def save_figures(self, output_dir: str = "./figures"):
-        """Save all phase diagrams to files."""
-        import os
-        os.makedirs(output_dir, exist_ok=True)
-        
-        # Fig 1(a)
-        fig_a = self.plot_phase_diagram_delta_u(v=0.0)
-        if fig_a is not None:
-            fig_a.savefig(f"{output_dir}/fig_1a_phase_diagram_delta_u.png", dpi=150)
-            print(f"Saved: {output_dir}/fig_1a_phase_diagram_delta_u.png")
-        
-        # Fig 1(b)
-        fig_b = self.plot_phase_diagram_u_v(delta=0.0)
-        if fig_b is not None:
-            fig_b.savefig(f"{output_dir}/fig_1b_phase_diagram_u_v.png", dpi=150)
-            print(f"Saved: {output_dir}/fig_1b_phase_diagram_u_v.png")
+
+        fig.savefig(
+            IMAGES_DIR / filename,
+            dpi=200,
+            bbox_inches="tight",
+        )
+
+        plt.close(fig)
+
+    def _chern_plot(self, points, y_key, ylabel, title, filename):
+        points = [
+            p for p in points
+            if p["chern"] is not None
+        ]
+
+        if not points:
+            return
+
+        cmap = ListedColormap([
+            "purple",
+            "green",
+            "gold",
+        ])
+
+        norm = BoundaryNorm(
+            [-0.5, 0.5, 1.5, 2.5],
+            cmap.N,
+        )
+
+        xs, ys, grid = self._nearest_grid(
+            points,
+            y_key,
+            "chern",
+        )
+
+        fig, ax = plt.subplots(
+            figsize=(10, 8)
+        )
+
+        ax.imshow(
+            grid,
+            origin="lower",
+            extent=[
+                xs[0],
+                xs[-1],
+                ys[0],
+                ys[-1],
+            ],
+            aspect="auto",
+            interpolation="nearest",
+            cmap=cmap,
+            norm=norm,
+            zorder=1,
+        )
+
+        scatter = ax.scatter(
+            [p["u"] for p in points],
+            [p[y_key] for p in points],
+            c=[p["chern"] for p in points],
+            cmap=cmap,
+            norm=norm,
+            s=65,
+            edgecolors="black",
+            linewidths=0.8,
+            zorder=4,
+        )
+
+        ax.set_xlabel(
+            r"$U/t$"
+        )
+
+        ax.set_ylabel(
+            ylabel
+        )
+
+        ax.set_title(
+            title,
+            pad=12,
+        )
+
+        cbar = fig.colorbar(
+            scatter,
+            ax=ax,
+            ticks=[0, 1, 2],
+        )
+
+        cbar.set_label(
+            r"$\mathrm{Chern\ number}$",
+            fontsize=18,
+        )
+
+        cbar.ax.tick_params(
+            labelsize=16
+        )
+
+        fig.tight_layout()
+
+        fig.savefig(
+            IMAGES_DIR / filename,
+            dpi=200,
+            bbox_inches="tight",
+        )
+
+        plt.close(fig)
+
+    def plot_all(self):
+        delta_u = self._delta_u(0.0)
+        u_v = self._u_v(0.0)
+
+        self._chern_plot(
+            delta_u,
+            "delta",
+            r"$\Delta/t$",
+            r"$\mathrm{Chern\ number}: \Delta/t\ \mathrm{vs.}\ U/t,\quad V/t=0$",
+            "chern_delta_u.png",
+        )
+
+        self._chern_plot(
+            u_v,
+            "v",
+            r"$V/t$",
+            r"$\mathrm{Chern\ number}: V/t\ \mathrm{vs.}\ U/t,\quad \Delta/t=0$",
+            "chern_v_u.png",
+        )
+
+        self._plot_observable(
+            delta_u,
+            "delta",
+            "cdw",
+            r"$\Delta/t$",
+            r"$\mathrm{CDW}: \Delta/t\ \mathrm{vs.}\ U/t,\quad V/t=0$",
+            "cdw_delta_u.png",
+            cmap="hot",
+            interpolation="nearest",
+        )
+
+        self._plot_observable(
+            u_v,
+            "v",
+            "cdw",
+            r"$V/t$",
+            r"$\mathrm{CDW}: V/t\ \mathrm{vs.}\ U/t,\quad \Delta/t=0$",
+            "cdw_v_u.png",
+            cmap="hot",
+            interpolation="nearest",
+        )
+
+        self._plot_observable(
+            delta_u,
+            "delta",
+            "sdw",
+            r"$\Delta/t$",
+            r"$\mathrm{SDW}: \Delta/t\ \mathrm{vs.}\ U/t,\quad V/t=0$",
+            "sdw_delta_u.png",
+            cmap="hot",
+            interpolation="nearest",
+        )
+
+        self._plot_observable(
+            u_v,
+            "v",
+            "sdw",
+            r"$V/t$",
+            r"$\mathrm{SDW}: V/t\ \mathrm{vs.}\ U/t,\quad \Delta/t=0$",
+            "sdw_v_u.png",
+            cmap="hot",
+            interpolation="nearest",
+        )
 
 
 def main():
-    """Plot results from phase diagram calculation."""
-    plotter = PhaseDiagramPlotter()
-    
-    # Plot both phase diagrams
-    print("Plotting (Δ, U) phase diagram at V=0...")
-    fig_a = plotter.plot_phase_diagram_delta_u(v=0.0)
-    if fig_a is not None:
-        plt.show()
-    
-    print("\nPlotting (U, V) phase diagram at Δ=0...")
-    fig_b = plotter.plot_phase_diagram_u_v(delta=0.0)
-    if fig_b is not None:
-        plt.show()
-    
-    # Save figures
-    print("\nSaving figures...")
-    plotter.save_figures()
+    PhaseDiagramPlotter().plot_all()
 
 
 if __name__ == "__main__":

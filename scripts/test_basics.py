@@ -7,15 +7,12 @@ Run basic sanity checks before computing full phase diagrams.
 import sys
 import numpy as np
 
-# Add project root to path
-sys.path.insert(0, '/home/ctort/Desktop/ed/git')
-
-from src.config import print_config
-from src.basis import get_fock_basis, reset_basis
-from src.lattice import get_lattice
-from src.hamiltonian import HaldaneHubbardHamiltonian
-from src.ed_solver import ExactDiagonalizationSolver
-from src.observables import ObservableCalculator
+from ed.config import print_config
+from ed.basis import get_fock_basis, reset_basis
+from ed.lattice import get_lattice
+from ed.hamiltonian import HaldaneHubbardHamiltonian
+from ed.ed_solver import ExactDiagonalizationSolver
+from ed.observables import ObservableCalculator
 
 
 def test_lattice():

@@ -43,9 +43,9 @@ U_DEFAULT = 0.0  # Hubbard interaction
 V_DEFAULT = 0.0  # Nearest-neighbor density-density
 
 # Phase diagram scanning ranges
-DELTA_RANGE = np.linspace(0, 4.1, 2)
-U_RANGE = np.linspace(0, 10.5, 2)
-V_RANGE = np.linspace(0, 4.1, 2)
+DELTA_RANGE = np.linspace(0, 4, 16)
+U_RANGE = np.linspace(0, 13, 16)
+V_RANGE = np.linspace(0, 4, 16)
 
 # ============================================================================
 # CHERN NUMBER CALCULATION
@@ -91,7 +91,7 @@ CHECKPOINT_INTERVAL = 5  # Save every N points
 # DEBUGGING
 # ============================================================================
 
-VERBOSE = True
+VERBOSE = False
 PROFILE = False  # Enable timing profiling
 
 def print_config():
