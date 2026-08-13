@@ -1,64 +1,64 @@
 """
-Fixed particle number Fock basis construction.
+Sz-sector-factorized Fock basis construction.
 
-A state is represented as a single integer (Fock state) where bit i indicates
-occupancy of orbital i. We enumerate all states with Hamming weight = NUM_ELECTRONS.
+Physics
+-------
+The Haldane-Hubbard Hamiltonian in this codebase never mixes spin: hopping
+(t1, t2, the Haldane phase, and the twisted-boundary flux) is identical for
+up and down and acts within a spin species only, and every interaction term
+(U, V, staggered potential) is density-density. So besides total particle
+number N, total Sz is *also* conserved, and fixing N_UP and N_DN separately
+(config.N_UP / config.N_DN) restricts the calculation to one Sz sector
+instead of diagonalizing across all of them at once.
+
+Representation
+--------------
+Because the model doesn't mix spins, a many-body basis state can be built as
+an independent pair (down-spin occupation pattern, up-spin occupation
+pattern), each drawn from a *single-spin* sub-basis over NUM_SITES orbitals
+(one orbital per site, no more spin-interleaving). We never form the flat
+product basis explicitly: a combined state is identified by an
+(dn_index, up_index) pair, and the many-body wavefunction is a
+(dim_dn, dim_up) array -- see hamiltonian.py for how the Hamiltonian acts on
+that shape directly (a "matrix-free" LinearOperator), so the huge product
+dimension dim_dn * dim_up is never used to allocate an actual matrix.
+
+This mirrors the I = 2^L * I_down + I_up convention (Lin & Gubernatis) that
+factors the Hubbard-model Fock space along the same lines.
 """
 
 import math
 from itertools import combinations
-from typing import List
 import numpy as np
-from .config import NUM_ORBITALS, NUM_ELECTRONS, VERBOSE
+from .config import NUM_SITES, N_UP, N_DN, VERBOSE
 
 
-class FockBasis:
+class SpinBasis:
     """
-    Manages the fixed particle number Fock basis.
-    
-    Each state is represented as an integer where bit positions indicate
-    orbital occupancies. For example, with 4 orbitals:
-      state = 0101 means orbitals 0 and 2 are occupied
+    Fock basis for a single spin species: NUM_SITES orbitals (one per site),
+    a fixed number of electrons occupied. Used independently for the up and
+    down channels; if N_UP == N_DN the two channels can share one instance
+    (see SzSectorBasis below).
     """
-    
-    def __init__(self):
-        """
-        Initialize and construct the basis.
-        """
-        self.num_orbitals = NUM_ORBITALS
-        self.num_electrons = NUM_ELECTRONS
-        
-        # List of all valid basis states
-        self.basis_states: np.ndarray = np.empty(0, dtype=np.int64)
-        
-        self._construct_basis()
-    
-    def _construct_basis(self):
-        """
-        Enumerate all states with exactly num_electrons occupied orbitals.
 
-        At half filling: NUM_ORBITALS = 24 and NUM_ELECTRONS = 12, thus a
-        basis with C(24, 12) = 2704156 states.
+    def __init__(self, n_orbitals: int, n_electrons: int):
+        self.num_orbitals = n_orbitals
+        self.num_electrons = n_electrons
+        self.states_np = self._construct()
+        self.dim = self.states_np.shape[0]
 
-        Implementation note: rather than testing all 2^num_orbitals
-        candidate integers and filtering by popcount (16.7M candidates for
-        the 24-orbital case, each requiring a bin(state).count('1') call),
-        we generate the C(n, k) valid occupation patterns directly via
-        itertools.combinations and convert them to integers with a single
-        vectorized numpy reduction. This touches only the states that are
-        actually in the basis, and does the bit-assembly at C speed instead
-        of once per state in the Python interpreter.
+    def _construct(self) -> np.ndarray:
+        """
+        Generate the C(n_orbitals, n_electrons) valid occupation patterns
+        directly via itertools.combinations (rather than testing all
+        2**n_orbitals candidates and filtering by popcount), and assemble
+        them into integers with a single vectorized numpy reduction.
         """
         n, k = self.num_orbitals, self.num_electrons
         count = math.comb(n, k)
-
         if count == 0:
-            if VERBOSE:
-                print("Constructed Fock basis: 0 states (invalid n/k)")
-            return
+            return np.empty(0, dtype=np.int64)
 
-        # Flatten combinations into a (count, k) index array, then reduce
-        # each row to an integer state via sum of 2**orbital_index.
         flat = np.fromiter(
             (idx for combo in combinations(range(n), k) for idx in combo),
             dtype=np.int64,
@@ -66,89 +66,66 @@ class FockBasis:
         )
         combo_arr = flat.reshape(count, k)
         states = (np.int64(1) << combo_arr).sum(axis=1)
-        states.sort()  # preserve the original ascending-integer ordering/index convention
+        states.sort()
+        return states
 
-        self.basis_states = states
+    def state_to_index(self, state: int) -> int:
+        """Vectorized-lookup-friendly index search (no dict kept around)."""
+        idx = int(np.searchsorted(self.states_np, state))
+        if idx < self.dim and self.states_np[idx] == state:
+            return idx
+        return -1
+
+    def index_to_state(self, index: int) -> int:
+        return int(self.states_np[index])
+
+
+class SzSectorBasis:
+    """
+    Combined (N_UP, N_DN) Sz-sector basis: a pair of SpinBasis instances plus
+    the implicit combined dimension dim_dn * dim_up. A many-body index is
+    (dn_index, up_index); the flat index (for anything that still wants one,
+    e.g. warm-start vectors) is dn_index * dim_up + up_index, matching a
+    row-major reshape to (dim_dn, dim_up).
+    """
+
+    def __init__(self):
+        self.up = SpinBasis(NUM_SITES, N_UP)
+        # Reuse the exact same SpinBasis object when the sectors are
+        # identical (the common Sz=0, N_UP==N_DN case) -- avoids building
+        # and holding two copies of what is the same array.
+        self.dn = self.up if N_DN == N_UP else SpinBasis(NUM_SITES, N_DN)
+
+        self.dim_up = self.up.dim
+        self.dim_dn = self.dn.dim
+        self.fock_dim = self.dim_up * self.dim_dn
 
         if VERBOSE:
-            print(f"Constructed Fock basis:")
-            print(f"  Orbitals: {self.num_orbitals}")
-            print(f"  Electrons: {self.num_electrons}")
-            print(f"  Basis dimension: {len(self.basis_states)}")
-            print(f"  Expected (combinatorial): C({self.num_orbitals}, {self.num_electrons}) = {count}")
-    
-    def get_occupation_pattern(self, state: int) -> List[int]:
-        """Get the list of orbital indices that are occupied"""
-        occupied = []
-        for orb in range(self.num_orbitals):
-            if BasisOperations.is_occupied(state, orb):
-                occupied.append(orb)
-        return occupied
-    
-    def print_basis_sample(self, n_states: int = 10):
-        """Print sample of basis states for debugging."""
-        print(f"\nSample of first {min(n_states, len(self.basis_states))} basis states:")
-        print(f"{'Index':<8} {'State (int)':<15} {'State (binary)':<30} {'Occupancy':<20}")
-        print("-" * 75)
-        
-        for idx in range(min(n_states, len(self.basis_states))):
-            state = self.basis_states[idx]
-            occupied = self.get_occupation_pattern(state)
-            binary = format(state, f'0{self.num_orbitals}b')
-            occupied_str = f"[{','.join(map(str, occupied))}]"
-            
-            print(f"{idx:<8} {state:<15} {binary:<30} {occupied_str:<20}")
+            print("Constructed Sz-sector Fock basis:")
+            print(f"  Orbitals per spin: {NUM_SITES}")
+            print(f"  N_up={N_UP} (dim={self.dim_up}), N_dn={N_DN} (dim={self.dim_dn})")
+            print(f"  Combined dimension: {self.fock_dim}"
+                  f" (vs {math.comb(2*NUM_SITES, N_UP+N_DN)} for the unrestricted flat basis)")
 
+    # -- convenience combined-index helpers -----------------------------
+    def combined_index(self, dn_idx: int, up_idx: int) -> int:
+        return dn_idx * self.dim_up + up_idx
 
-class BasisOperations:
-    """Common operations on Fock basis states."""
-    
-    @staticmethod
-    def count_particles(state: int) -> int:
-        """Count number of occupied orbitals (Hamming weight)."""
-        return bin(state).count('1')
-    
-    @staticmethod
-    def is_occupied(state: int, orbital: int) -> bool:
-        """Check if an orbital is occupied in a state."""
-        return bool(state & (1 << orbital))
-    
-    @staticmethod
-    def set_occupied(state: int, orbital: int) -> int:
-        """Set an orbital to occupied."""
-        return state | (1 << orbital)
-    
-    @staticmethod
-    def set_unoccupied(state: int, orbital: int) -> int:
-        """Set an orbital to unoccupied."""
-        return state & ~(1 << orbital)
-    
-    @staticmethod
-    def count_particles_between(state: int, orb1: int, orb2: int) -> int:
-        """Count occupied orbitals between orb1 and orb2 (exclusive)."""
-        min_orb = min(orb1, orb2)
-        max_orb = max(orb1, orb2)
-        
-        count = 0
-        for orb in range(min_orb + 1, max_orb):
-            if state & (1 << orb):
-                count += 1
-        return count
-    
-    @staticmethod
-    def fermionic_sign(state: int, orb1: int, orb2: int) -> int:
-        count = BasisOperations.count_particles_between(state, orb1, orb2)
-        return 1 if count % 2 == 0 else -1
+    def split_index(self, flat_idx: int):
+        dn_idx, up_idx = divmod(flat_idx, self.dim_up)
+        return dn_idx, up_idx
 
 
 _BASIS = None
 
-def get_fock_basis() -> FockBasis:
-    """Get or create the global Fock basis."""
+
+def get_fock_basis() -> SzSectorBasis:
+    """Get or create the global Sz-sector basis."""
     global _BASIS
     if _BASIS is None:
-        _BASIS = FockBasis()
+        _BASIS = SzSectorBasis()
     return _BASIS
+
 
 def reset_basis():
     """Reset the global basis (for testing with different parameters)."""

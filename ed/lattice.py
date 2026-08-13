@@ -138,6 +138,30 @@ class HoneycombLattice:
         """Get all bond shifts of type bond_type as (i, j) pairs with i < j."""
         shifts = self.nn_bond_shift if bond_type == 'nn' else self.nnn_bond_shift
         return shifts
+    r'''
+    
+    def get_neighbors(self, site_idx: int, shell: int = 1) -> List[int]:
+        """
+        Get neighbors of a site.
+        
+        Args:
+            site_idx: Site index (0-11)
+            shell: 1 for NN, 2 for NNN
+            
+        Returns:
+            List of neighbor site indices
+        """
+        neighbors = set()
+        
+        bonds = self.nn_bonds if shell == 1 else (self.nnn_bonds if shell == 2 else [])
+        for i, j in bonds:
+            if i == site_idx:
+                neighbors.add(j)
+            elif j == site_idx:
+                neighbors.add(i)
+        
+        return sorted(list(neighbors))
+    '''
     
     def print_structure(self):
         """Print lattice structure for debugging."""

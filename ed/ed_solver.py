@@ -128,7 +128,7 @@ class ExactDiagonalizationSolver:
             ])
         
         n_points = len(flux_points)
-        fock_dim = len(self.basis.basis_states)
+        fock_dim = self.basis.fock_dim
         
         ground_states = np.zeros((fock_dim, n_points), dtype=np.complex128)
         
