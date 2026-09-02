@@ -1,35 +1,28 @@
 """
 Haldane-Hubbard Model Exact Diagonalization Code.
 
-Python implementation for reproducing results from:
-"Emergence of an antiferromagnetic topological Anderson insulator in the 
-interacting Haldane model" - Uría-Álvarez & Valentí (2026)
+Reproduces "Emergence of an antiferromagnetic topological Anderson
+insulator in the interacting Haldane model" (Uria-Alvarez & Valenti,
+2026). ED method follows the approach in Jafari, "Introduction to
+Hubbard Model and Exact Diagonalization" (arXiv:0807.4878).
 
-Main modules:
-- config: Configuration and parameters
-- basis: Fixed particle number Fock basis
-- lattice: Honeycomb lattice structure
-- hamiltonian: Many-body Hamiltonian construction
-- ed_solver: Exact diagonalization solver
-- observables: Observable calculations (CDW, SDW, Chern number)
-
-Future: C++ kernels for Hamiltonian building and diagonalization
+Modules
+-------
+config       physical and numerical parameters
+lattice      12A honeycomb cluster, nn/nnn bonds
+basis        per-spin fixed-N Fock basis
+fast_ops     bit-level hopping matrix elements
+hamiltonian  spin-factorized, matrix-free Hamiltonian
+ed_solver    ground state via Lanczos
+observables  CDW, SDW, density matrix, Chern number
 """
-
-__version__ = "0.1.0"
-
 from . import config
-from . import basis
 from . import lattice
+from . import basis
 from . import hamiltonian
 from . import ed_solver
 from . import observables
 
 __all__ = [
-    'config',
-    'basis',
-    'lattice', 
-    'hamiltonian',
-    'ed_solver',
-    'observables',
+    'config', 'lattice', 'basis', 'hamiltonian', 'ed_solver', 'observables',
 ]

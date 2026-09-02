@@ -1,93 +1,25 @@
-"""
-Vectorized numpy helpers for Fock-basis operations.
+def occupied(state, orb):
+    return (state >> orb) & 1 # checks if orb is 1
 
-The key idea used throughout this module: for a fixed pair of orbitals
-(orb_i, orb_j), the *structure* of the single-particle hop c_i^dagger c_j
-(which bra states it connects to which ket states, and what fermionic sign
-each connection carries) depends only on the basis, not on any Hamiltonian
-parameter (t, delta, U, V, flux, ...). So we compute that structure once,
-vectorized over the whole basis with numpy, and cache it. Building the
-actual Hamiltonian for a given set of parameters then only needs a handful
-of scalar multiplies instead of a fresh O(fock_dim) Python loop.
-"""
-
-import numpy as np
-
-
-def popcount(arr: np.ndarray) -> np.ndarray:
-    """Vectorized population count (number of set bits) for an int array."""
-    if hasattr(np, "bitwise_count"):
-        # numpy >= 2.0
-        return np.bitwise_count(arr)
-    # Fallback for numpy < 2.0
-    arr = arr.copy()
-    c = np.zeros_like(arr)
-    while np.any(arr):
-        c += arr & 1
-        arr >>= 1
-    return c
-
-
-def build_orbital_pair_template(basis_states_np: np.ndarray, orb_i: int, orb_j: int):
+def hop_matrix_elements(states, i, j):
     """
-    Precompute the structural data for the single-particle term c_i^dagger c_j
-    over the full basis: which bra indices connect to which ket indices, and
-    the fermionic sign of each connection.
-
-    Mirrors (and is numerically identical to) the following pure-Python loop:
-
-        for bra_idx, state_bra in enumerate(basis_states):
-            if not is_occupied(state_bra, orb_j):
-                continue
-            state_temp = set_unoccupied(state_bra, orb_j)
-            if is_occupied(state_temp, orb_i):
-                continue
-            state_ket = set_occupied(state_temp, orb_i)
-            ket_idx = basis_dict.get(state_ket)
-            sign = fermionic_sign(state_bra, orb_j, orb_i)
-            # connects bra_idx -> ket_idx with the given sign
-
-    Requires basis_states_np to be SORTED ascending (used for vectorized
-    lookup via np.searchsorted).
-
-    Returns
-    -------
-    bra_idx : np.ndarray[int]   basis indices of contributing bra states
-    ket_idx : np.ndarray[int]   basis indices of the corresponding ket states
-    sign    : np.ndarray[int8]  fermionic sign of each connection
+    Stores all finite <bra|c_i^dagger c_j|ket> matrix elements, 
+    which are either 1 or -1, depending if the sites in between 
+    i and j are even or odd.
     """
-    bit_i, bit_j = 1 << orb_i, 1 << orb_j
+    index = {s: k for k, s in enumerate(states)}
+    lo, hi = (i, j) if i < j else (j, i)
+    between_mask = ((1 << hi) - 1) & ~((1 << (lo + 1)) - 1) # bits between lo and hi are 1, rest are zero
 
-    occ_j = (basis_states_np & bit_j) != 0
-    bra_idx_full = np.nonzero(occ_j)[0]
-    bra_states_full = basis_states_np[occ_j]
-    state_temp = bra_states_full & ~bit_j
-
-    free_i = (state_temp & bit_i) == 0
-    bra_idx = bra_idx_full[free_i]
-    bra_states = bra_states_full[free_i]          # original state_bra (both conditions met)
-    state_ket = state_temp[free_i] | bit_i
-
-    ket_idx = np.searchsorted(basis_states_np, state_ket)
-    # basis is fixed particle number, so state_ket is guaranteed present;
-    # cheap paranoia check, remove if this ever becomes a hot path:
-    # assert np.all(basis_states_np[ket_idx] == state_ket)
-
-    lo, hi = (orb_i, orb_j) if orb_i < orb_j else (orb_j, orb_i)
-    mask = ((1 << hi) - 1) & ~((1 << (lo + 1)) - 1)
-    counts = popcount(bra_states & mask)
-    sign = np.where(counts % 2 == 0, 1, -1).astype(np.int8)
-
-    return bra_idx, ket_idx, sign
-
-
-def build_occupation_masks(basis_states_np: np.ndarray, num_orbitals: int) -> np.ndarray:
-    """
-    Precompute, for every orbital, a boolean array over the whole basis
-    indicating occupation. Shape: (num_orbitals, fock_dim).
-    """
-    fock_dim = basis_states_np.shape[0]
-    occ = np.zeros((num_orbitals, fock_dim), dtype=bool)
-    for orb in range(num_orbitals):
-        occ[orb] = (basis_states_np & (1 << orb)) != 0
-    return occ
+    entries = []
+    for ket, init_state in enumerate(states):
+        if not occupied(init_state, j):
+            continue
+        tmp = init_state & ~(1 << j) # sets bit j to 0
+        if occupied(tmp, i):
+            continue
+        final_state = tmp | (1 << i) # sets bit i to 1
+        bra = index[final_state]
+        sign = -1 if bin(init_state & between_mask).count("1") % 2 else 1
+        entries.append((ket, bra, sign))
+    return entries
