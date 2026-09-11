@@ -27,19 +27,6 @@ SUB_SIGN = np.array([1, -1, 1, -1, -1, 1, -1, 1, -1, 1, -1, 1])
 L1 = np.array([6*a, 0.0])
 L2 = np.array([1.5*a, 1.5*np.sqrt(3)*a])
 
-
-def _min_dist(pos_i, pos_j):
-    """Distance and integer shift (n1, n2) to the closest periodic copy."""
-    dr = pos_i - pos_j
-    best_d, best_shift = np.linalg.norm(dr), (0, 0)
-    for n1 in (-1, 0, 1):
-        for n2 in (-1, 0, 1):
-            d = np.linalg.norm(dr + n1 * L1 + n2 * L2)
-            if d < best_d - 1e-9: # If two shifts give the same distance, keep the first
-                best_d, best_shift = d, (n1, n2)
-    return best_d, best_shift
-
-
 class Lattice:
     """Nearest-neighbor (A-B and B-A, t1) and next-nearest-neighbor (A-A and B-B, t2)
     bonds, identified by their length and by the sublattices they connect."""
