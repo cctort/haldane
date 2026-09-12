@@ -1,8 +1,7 @@
 import numpy as np
 from .config import TOL
 from .hamiltonian import Hamiltonian
-import primme
-
+from scipy.sparse.linalg import eigsh
 
 class EDSolver:
     def __init__(self, hamiltonian: Hamiltonian):
@@ -13,11 +12,11 @@ class EDSolver:
         H = self.hamiltonian.build(delta, U, V, flux_x, flux_y)
 
         if gap:
-            vals, vecs = primme.eigsh(H, k=2, which='SA', tol=TOL, v0=v0)
+            vals, vecs = eigsh(H, k=2, which='SA', tol=TOL, v0=v0)
             gap = abs(vals[1] - vals[0])
             return vals[0], vecs[:, 0], gap
         else:
-            vals, vecs = primme.eigsh(H, k=1, which='SA', tol=TOL, v0=v0)
+            vals, vecs = eigsh(H, k=1, which='SA', tol=TOL, v0=v0)
             return vals[0], vecs[:, 0]
 
     def flux_sweep(self, delta, U, V, flux_points):

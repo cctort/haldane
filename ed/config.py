@@ -1,7 +1,7 @@
 import numpy as np
 
 NUM_SITES = 12
-NUM_ELECTRONS = 12   # half filling at 12 electrons
+NUM_ELECTRONS = 3   # half filling at 12 electrons
 N_UP = NUM_ELECTRONS // 2
 N_DN = NUM_ELECTRONS - N_UP
 
@@ -12,6 +12,9 @@ PHI = np.pi / 2
 
 # ED tolerance
 TOL = 1e-11
+
+# Flux grid per dimension
+N_GRID = 4
 
 DTYPE = np.complex128
 VERBOSE = False

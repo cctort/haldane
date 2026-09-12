@@ -41,7 +41,7 @@ def build_states(n_sites, n_electrons):
     return np.array(sorted(states), dtype=np.int64)
 
 
-class Basis:
+class SpinBasis:
     def __init__(self, n_electrons):
         self.states = build_states(NUM_SITES, n_electrons)
         self.dim = len(self.states)
@@ -54,9 +54,9 @@ class Basis:
 
 class FullBasis:
     def __init__(self):
-        self.up = Basis(N_UP)
+        self.up = SpinBasis(N_UP)
         # Reuse the same basis object when both sectors are identical (these are read-only objects)
-        self.dn = self.up if N_DN == N_UP else Basis(N_DN)
+        self.dn = self.up if N_DN == N_UP else SpinBasis(N_DN)
         self.dim_up = self.up.dim
         self.dim_dn = self.dn.dim
         self.dim = self.dim_up * self.dim_dn

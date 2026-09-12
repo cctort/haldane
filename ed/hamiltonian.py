@@ -42,7 +42,7 @@ def hopping_matrix(states, flux_x, flux_y):
 
     for i, j, shift in LATTICE.nn_bonds:
         n1, n2 = shift
-        amp = T1 * np.exp(1j * (n1 * flux_x + n2 * flux_y))
+        amp = - T1 * np.exp(1j * (n1 * flux_x + n2 * flux_y))
         for bra, ket, sign in hop_matrix(states, i, j):
             rows += [ket, bra]
             cols += [bra, ket]
@@ -51,7 +51,7 @@ def hopping_matrix(states, flux_x, flux_y):
     for i, j, shift in LATTICE.nnn_bonds:
         n1, n2 = shift
         nu = LATTICE.chirality(i, j, shift)
-        amp = T2 * np.exp(1j * nu * PHI) * np.exp(1j * (n1 * flux_x + n2 * flux_y))
+        amp = - T2 * np.exp(1j * nu * PHI) * np.exp(1j * (n1 * flux_x + n2 * flux_y))
         for bra, ket, sign in hop_matrix(states, i, j):
             rows += [ket, bra]
             cols += [bra, ket]
@@ -79,8 +79,8 @@ def diagonal(occ_dn, occ_up, delta, U, V):
 
     if V:
         for i, j, _ in LATTICE.nn_bonds:
-            n_i = occ_up[i][:, None] + occ_dn[i][None, :]
-            n_j = occ_up[j][:, None] + occ_dn[j][None, :]
+            n_i = occ_dn[i][:, None] + occ_up[i][None, :]
+            n_j = occ_dn[j][:, None] + occ_up[j][None, :]
             diag += V * n_i * n_j
 
     return diag
@@ -109,4 +109,4 @@ class Hamiltonian:
             out = H_dn @ M + M @ H_up_T + diag * M # Same as (H_up \otimes id_dn + id_up \otimes H_dn + diag) v
             return out.reshape(dim)
 
-        return LinearOperator((dim, dim), matvec=matvec, rmatvec=matvec, dtype=DTYPE)
+        return LinearOperator(shape=(dim, dim), matvec=matvec, rmatvec=matvec, dtype=DTYPE)

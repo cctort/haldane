@@ -53,7 +53,7 @@ class Lattice:
     def chirality(self, i, j, shift):
         """Haldane phase sign nu_ij = +-1 for a next-nearest-neighbor bond."""
         n1, n2 = shift
-        dx, dy = (POSITIONS[j] + n1 * L1 + n2 * L2) - POSITIONS[i] # coordinates of the bond vector from i to the periodic copy of j
+        dx, dy = (POSITIONS[i] + n1 * L1 + n2 * L2) - POSITIONS[j] # coordinates of the bond vector from i to the periodic copy of j
         angle = np.arctan2(dy, dx) # angle of the bond vector measured from the x axis
         
         return SUB_SIGN[i] if np.sin(3 * angle) > 0 else -SUB_SIGN[i] # changes sign if bond goes counterclockwise around a hexagon

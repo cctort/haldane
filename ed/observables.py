@@ -20,7 +20,7 @@ class Observables:
     def cdw(self, psi):
         """Staggered charge structure factor S_CDW = (1/N) sum_ij xi_i xi_j <n_i n_j>."""
         prob = self.prob(psi)
-        stag_charge = self.stag_dn[:, None] + self.stag_up[None, :]
+        stag_charge = self.stag_up[None, :] + self.stag_dn[:, None]
         return float(np.sum(stag_charge * stag_charge * prob) / NUM_SITES)
 
     def sdw(self, psi):
