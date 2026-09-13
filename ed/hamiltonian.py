@@ -51,7 +51,7 @@ def hopping_matrix(states, flux_x, flux_y):
     for i, j, shift in LATTICE.nnn_bonds:
         n1, n2 = shift
         nu = LATTICE.chirality(i, j, shift)
-        amp = - T2 * np.exp(1j * nu * PHI) * np.exp(1j * (n1 * flux_x + n2 * flux_y))
+        amp = - T2 * np.exp(1j * np.pi * nu * PHI) * np.exp(1j * (n1 * flux_x + n2 * flux_y))
         for bra, ket, sign in hop_matrix(states, i, j):
             rows += [ket, bra]
             cols += [bra, ket]

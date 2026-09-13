@@ -2,6 +2,7 @@ import numpy as np
 from .lattice import NUM_SITES, SUB_SIGN
 from .basis import BASIS
 from .hamiltonian import hop_matrix, occupation_table
+from .config import N_FLUX
 
 
 class Observables:
@@ -56,7 +57,7 @@ class Observables:
 
         return rho_up, rho_dn
 
-    def chern_number(self, delta, U, V, grid=4):
+    def chern_number(self, delta, U, V, grid=N_FLUX):
         """
         Total (up+down) Chern number via Fukui-Hatsugai-Suzuki flux
         integration: build the ground state on an NxN flux grid, form
