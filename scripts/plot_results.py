@@ -252,7 +252,7 @@ def plot_diagram_int(configs, x_key, y_key, fixed_var, fixed_val, xlabel, ylabel
         plt.close(fig)
 
 
-def plot_1d_cut(configs, x_key, fixed_vars, value_key, ylabel, xlabel, title, filename=None, colors=None, labels=None, xlim=None):
+def plot_1d_cut(configs, x_key, fixed_vars, value_key, ylabel, xlabel, title, filename=None, colors=None, labels=None, xlim=None, relative_to=None):
     if isinstance(configs, dict):
         configs = [configs]
     n_configs = len(configs)
@@ -298,27 +298,51 @@ def plot_1d_cut(configs, x_key, fixed_vars, value_key, ylabel, xlabel, title, fi
     else:
         title_dict = {obs: str(obs) for obs in value_key}
 
+    # Rearrange indices so the reference configuration is processed first
+    indices = list(range(n_configs))
+    if relative_to is not None:
+        if not (0 <= relative_to < n_configs):
+            raise ValueError(f"relative_to index {relative_to} out of range for {n_configs} configs")
+        indices.remove(relative_to)
+        indices.insert(0, relative_to)
+
     for plot_idx, obs in enumerate(value_key):
         ax = axes_flat[plot_idx]
         lines_plotted = 0
+        ref_dict = {}
 
-        for i, config in enumerate(configs):
+        for loop_idx, i in enumerate(indices):
+            config = configs[i]
             points = get_points(config)
             
             for f_var, f_val in fixed_vars.items():
                 points = filter_points(points, f_var, f_val)
                 
             points = crop_points(points, x_key, xlim)
-            points = [p for p in points if p[obs] is not None]
+
+            # If this is the reference config (first item in the rearranged loop), save it and skip plotting
+            if relative_to is not None and loop_idx == 0:
+                points = [p for p in points if p[obs] is not None]
+                ref_dict = {p[x_key]: p[obs] for p in points}
+                continue
+
+            # For subsequent configs, filter matching x-points and subtract reference values
+            if relative_to is not None:
+                points = [p for p in points if p[x_key] in ref_dict and p[obs] is not None]
+            else:
+                points = [p for p in points if p[obs] is not None]
 
             if not points:
-                print(f'No data fits the chosen parameter constraints for config index {i} and observable {obs}')
                 continue
 
             points.sort(key=lambda p: p[x_key])
 
             x_vals = [p[x_key] for p in points]
-            y_vals = [p[obs] for p in points]
+            
+            if relative_to is not None:
+                y_vals = [p[obs] - ref_dict[p[x_key]] for p in points]
+            else:
+                y_vals = [p[obs] for p in points]
 
             current_color = colors[i % len(colors)]
             current_label = labels[i] if i < len(labels) else None
@@ -349,38 +373,3 @@ def plot_1d_cut(configs, x_key, fixed_vars, value_key, ylabel, xlabel, title, fi
         plt.close(fig)
     else:
         return fig, axes
-
-
-def plot_all(configs, u_range=None, delta_range=None, v_range=None):
-    if not configs:
-        return
-
-    # --- 2D Phase Diagrams ---
-    plot_diagram_int(configs, "u", "delta", "v", 0.0, r"$U/t$", r"$\Delta/t$",
-                     r"$\mathrm{Chern\ number}:\ \Delta/t\ \mathrm{vs.}\ U/t,\ V/t=0$",
-                     "chern_delta_u.png", xlim=u_range, ylim=delta_range)
-
-    plot_diagram_int(configs, "u", "v", "delta", 0.0, r"$U/t$", r"$V/t$",
-                     r"$\mathrm{Chern\ number}:\ V/t\ \mathrm{vs.}\ U/t,\ \Delta/t=0$",
-                     "chern_v_u.png", xlim=u_range, ylim=v_range)
-
-    # Added E_gs to automated loops alongside cdw, sdw, and gap
-    for key, label in (("E_gs", "E_{gs}"), ("cdw", "CDW"), ("sdw", "SDW"), ("gap", "Gap")):
-        val_label = rf"$\mathrm{{{label}}}$"
-        
-        plot_diagram(configs, "u", "delta", "v", 0.0, key, val_label, r"$U/t$", r"$\Delta/t$",
-                   rf"$\mathrm{{{label}}}:\ \Delta/t\ \mathrm{{vs.}}\ U/t,\ V/t=0$",
-                   f"{key}_delta_u.png", xlim=u_range, ylim=delta_range)
-
-        plot_diagram(configs, "u", "v", "delta", 0.0, key, val_label, r"$U/t$", r"$V/t$",
-                   rf"$\mathrm{{{label}}}:\ V/t\ \mathrm{{vs.}}\ U/t,\ \Delta/t=0$",
-                   f"{key}_v_u.png", xlim=u_range, ylim=v_range)
-                   
-    # --- 1D Cuts (Examples) ---
-    for key, label in (("E_gs", "E_{gs}"), ("cdw", "CDW"), ("sdw", "SDW"), ("gap", "Gap"), ("chern", "Chern number")):
-        val_label = rf"$\mathrm{{{label}}}$" if key != "chern" else label
-        
-        # Example 1: Sweep U while Delta=0, V=0
-        plot_1d_cut(configs, "u", {"delta": 0.0, "v": 0.0}, key, val_label, r"$U/t$", 
-                    rf"{val_label}\ \mathrm{{vs.}}\ U/t\ (\Delta/t=0, V/t=0)$",
-                    f"1d_{key}_vs_u.png", xlim=u_range)

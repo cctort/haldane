@@ -26,7 +26,7 @@ CONFIG = {
     'T1': 1.0,
     'T2': 0.2,
     'PHI': 0.5,
-    'TOL': 1e-7,
+    'TOL': 1e-9,
     'N_FLUX': 4,
 }
 for key, value in CONFIG.items():
