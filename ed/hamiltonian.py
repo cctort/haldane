@@ -8,10 +8,10 @@ from .basis import BASIS
 
 
 def occupied(state, orb):
-    return (state >> orb) & 1 # checks if orb is 1
+    return (state >> orb) & 1 # shifts the orb-th bit to the first position and checks if 1
 
 
-def hop_matrix(states, i, j):
+def hop_element(states, i, j):
     """
     Stores all finite <bra|c_i^dagger c_j|ket> matrix elements, 
     which are either 1 or -1, depending if the sites in between 
@@ -25,12 +25,12 @@ def hop_matrix(states, i, j):
     for ket, init_state in enumerate(states):
         if not occupied(init_state, j):
             continue
-        tmp = init_state & ~(1 << j) # sets bit j to 0
-        if occupied(tmp, i):
+        tmp_state = init_state & ~(1 << j) # init_state AND NOT (1 << j)
+        if occupied(tmp_state, i):
             continue
-        final_state = tmp | (1 << i) # sets bit i to 1
+        final_state = tmp_state | (1 << i) # tmp_state OR (1 << i)
         bra = index[final_state]
-        sign = -1 if bin(init_state & between_mask).count("1") % 2 else 1
+        sign = -1 if bin(init_state & between_mask).count("1") % 2 else 1 # -1 if odd number of 1s between i and j, else +1
         entries.append((ket, bra, sign))
     return entries
 
@@ -43,7 +43,7 @@ def hopping_matrix(states, flux_x, flux_y):
     for i, j, shift in LATTICE.nn_bonds:
         n1, n2 = shift
         amp = - T1 * np.exp(1j * (n1 * flux_x + n2 * flux_y))
-        for bra, ket, sign in hop_matrix(states, i, j):
+        for bra, ket, sign in hop_element(states, i, j):
             rows += [ket, bra]
             cols += [bra, ket]
             vals += [sign * amp, sign * np.conj(amp)]
@@ -52,7 +52,7 @@ def hopping_matrix(states, flux_x, flux_y):
         n1, n2 = shift
         nu = LATTICE.chirality(i, j, shift)
         amp = - T2 * np.exp(1j * np.pi * nu * PHI) * np.exp(1j * (n1 * flux_x + n2 * flux_y))
-        for bra, ket, sign in hop_matrix(states, i, j):
+        for bra, ket, sign in hop_element(states, i, j):
             rows += [ket, bra]
             cols += [bra, ket]
             vals += [sign * amp, sign * np.conj(amp)]
@@ -92,15 +92,17 @@ class Hamiltonian:
         self.occ_up = occupation_table(BASIS.up.states)
         self.occ_dn = self.occ_up if BASIS.dn is BASIS.up else occupation_table(BASIS.dn.states)
 
-        self._get_diagonal = lru_cache(maxsize=1)(
-            lambda delta, U, V: diagonal(self.occ_dn, self.occ_up, delta, U, V)
-        )
+        #self.get_diagonal = lru_cache(maxsize=1)(
+        #    lambda delta, U, V: diagonal(self.occ_dn, self.occ_up, delta, U, V)
+        #)
 
     def build(self, delta, U, V, flux_x=0.0, flux_y=0.0):
         H_up = hopping_matrix(self.basis.up.states, flux_x, flux_y)
         H_dn = H_up if self.basis.dn is self.basis.up else hopping_matrix(self.basis.dn.states, flux_x, flux_y)
         H_up_T = H_up.T.tocsr()
-        diag = self._get_diagonal(delta, U, V)
+        
+        #diag = self.get_diagonal(delta, U, V)
+        diag = diagonal(self.occ_dn, self.occ_up, delta, U, V)
 
         dim_up, dim_dn, dim = self.basis.dim_up, self.basis.dim_dn, self.basis.dim
 

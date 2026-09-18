@@ -55,7 +55,7 @@ class SpinBasis:
 class FullBasis:
     def __init__(self):
         self.up = SpinBasis(N_UP)
-        # Reuse the same basis object when both sectors are identical (these are read-only objects)
+        # Reuse the same basis object when both sectors are identical (read-only objects)
         self.dn = self.up if N_DN == N_UP else SpinBasis(N_DN)
         self.dim_up = self.up.dim
         self.dim_dn = self.dn.dim

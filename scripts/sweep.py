@@ -13,7 +13,7 @@ from ed.hamiltonian import Hamiltonian
 from ed.ed_solver import EDSolver
 from ed.observables import Observables
 
-DATA_DIR = Path('./data/tuning')
+DATA_DIR = Path('./data/clean')
 RESULTS_FILE = 'sweep.h5'
 REGISTRY_FILE = 'configs.json'
 
@@ -26,23 +26,24 @@ CONFIG = {
     'T1': 1.0,
     'T2': 0.2,
     'PHI': 0.5,
-    'TOL': 1e-9,
-    'N_FLUX': 4,
+    'K': 5,
+    'TOL': 1e-12,
+    'N_FLUX': 10,
 }
 for key, value in CONFIG.items():
     setattr(config, key, value)
 
-SWEEP_VARS = ('U',)
-FIXED_VARS = {'V': 0.0, 'delta': 0.0}
+SWEEP_VARS = ('U', 'V')
+FIXED_VARS = {'delta': 0.0}
 
 RANGES = {
-    'delta': np.linspace(0, 4, 20),
-    'U': np.linspace(6.75, 8.5, 64),
-    'V': np.linspace(0, 4, 2)
+    'delta': np.linspace(0, 4, 21),
+    'U': np.linspace(0, 12.5, 21),
+    'V': np.linspace(0, 4, 21)
 }
 
 # Options: 'E_gs', 'cdw', 'sdw', 'gap', 'chern'
-OBS = ['E_gs', 'cdw', 'sdw', 'gap', 'chern']
+OBS = ['chern']
 
 # if True removes all previous values for the current OBS elements
 REPLACE_OBS = False
@@ -71,10 +72,10 @@ def sweep(points, solver, observables, rank):
 
     for pt in points:
         delta, U, V = make_point(pt)
-        res = solver.ground_state(delta, U, V, v0=v0, gap=calc_gap)
+        res = solver.ground_state(delta, U, V, gap=calc_gap, v0=v0)
 
         E, psi = res[:2]
-        v0 = psi.reshape(-1, 1)
+        v0 = psi
         
         pt_data = {}
         
@@ -93,6 +94,9 @@ def sweep(points, solver, observables, rank):
         if 'chern' in OBS:
             pt_data['chern'] = observables.chern_number(delta, U, V, config.N_FLUX)
 
+        if 'resta' in OBS:
+            pt_data['resta'] = observables.resta_marker(psi)
+
         results[(delta, U, V)] = pt_data
 
     print(f"rank {rank}: {len(points)} points in {time.time()-t0:.1f}s")
@@ -108,6 +112,7 @@ def get_current_config():
         'T1': config.T1,
         'T2': config.T2,
         'PHI': config.PHI,
+        'K': config.K,
         'TOL': config.TOL,
         'N_FLUX': config.N_FLUX,
     }
@@ -155,7 +160,7 @@ def get_or_create_hdf5_file(data_dir, base_filename, current_config):
 def save(results, path):
     with h5py.File(path, 'a') as f:
         
-        # Clear the current run's observables from ALL existing points
+        # When REPLACE_OBS is True, clear active OBS from ALL points across the entire file first
         if REPLACE_OBS:
             for grp_name in list(f.keys()):
                 grp = f[grp_name]
@@ -163,7 +168,7 @@ def save(results, path):
                     if key in grp.attrs:
                         del grp.attrs[key]
 
-        # Save the new results
+        # Overwrite specified observables for the points in the current run
         for (delta, U, V), data in results.items():
             grp_name = f"delta_{delta:.4f}_U_{U:.4f}_V_{V:.4f}"
             grp = f.require_group(grp_name)
@@ -172,19 +177,16 @@ def save(results, path):
             grp.attrs['U'] = U
             grp.attrs['V'] = V
             
+            # Unconditionally write/overwrite active observables for evaluated points
             for k, v in data.items():
-                if REPLACE_OBS:
-                    grp.attrs[k] = v
-                else:
-                    #Only overwrite if the attribute does not already exist
-                    if k not in grp.attrs:
-                        grp.attrs[k] = v
-                        
-        # Clean up ghost groups with only 'delta', 'U', 'V' stored
+                grp.attrs[k] = v
+
+        # When REPLACE_OBS is True, remove points that no longer hold any observables
         if REPLACE_OBS:
             for grp_name in list(f.keys()):
                 grp = f[grp_name]
-                if len(grp.keys()) == 0 and all(k in ['delta', 'U', 'V'] for k in grp.attrs.keys()):
+                obs_attrs = [k for k in grp.attrs.keys() if k not in ('delta', 'U', 'V')]
+                if len(obs_attrs) == 0:
                     del f[grp_name]
 
 
@@ -203,6 +205,9 @@ def main():
         print(f"TARGET FILE   : {RESULTS_FILE.replace('.h5', f'_{config_hash}.h5')}")
         print("CONFIGURATION :")
         print(json.dumps(current_config, indent=2))
+        print("FIXED PARAMS : ", FIXED_VARS)
+        print("VARYING PARAMS : ", {var : (float(RANGES[var][0]), float(RANGES[var][-1]), len(RANGES[var])) for var in SWEEP_VARS})
+        print("EVALUATING OBSERVABLES : ", OBS)
         print("="*40, flush=True)
 
         DATA_DIR.mkdir(exist_ok=True)

@@ -1,7 +1,7 @@
 import numpy as np
-from .lattice import NUM_SITES, SUB_SIGN
+from .lattice import NUM_SITES, SUB_SIGN, POSITIONS
 from .basis import BASIS
-from .hamiltonian import hop_matrix, occupation_table
+from .hamiltonian import hop_element, occupation_table
 from .config import N_FLUX
 
 
@@ -50,19 +50,62 @@ class Observables:
             for j in range(NUM_SITES):
                 if i == j:
                     continue
-                for bra, ket, sign in hop_matrix(BASIS.up.states, j, i):
+                for bra, ket, sign in hop_element(BASIS.up.states, j, i):
                     rho_up[j, i] += sign * G[ket, bra]
-                for bra, ket, sign in hop_matrix(BASIS.dn.states, j, i):
+                for bra, ket, sign in hop_element(BASIS.dn.states, j, i):
                     rho_dn[j, i] += sign * H2[bra, ket]
 
         return rho_up, rho_dn
 
+    r'''
+    def resta_marker(self, psi):
+        """
+        Computes the Local Bott Index, which serves as the mathematically 
+        correct Local Chern Marker (LCM) for Periodic Boundary Conditions.
+        """
+        import scipy.linalg
+
+        rho_up, rho_dn = self.density_matrix(psi)
+        P = rho_up + rho_dn
+        
+        # 1. Define the supercell area and reciprocal lattice vectors G1, G2
+        # Supercell vectors are L1 = (6.0, 0.0), L2 = (1.5, 1.5*sqrt(3))
+        area = 6.0 * 1.5 * np.sqrt(3)
+        G1 = 2 * np.pi * np.array([1.5 * np.sqrt(3), -1.5]) / area
+        G2 = 2 * np.pi * np.array([0.0, 6.0]) / area
+
+        # 2. Map real-space coordinates to periodic phase angles
+        theta1 = POSITIONS @ G1
+        theta2 = POSITIONS @ G2
+        
+        # 3. Create diagonal unitary phase operators
+        U1 = np.diag(np.exp(1j * theta1))
+        U2 = np.diag(np.exp(1j * theta2))
+        
+        # 4. Project the unitaries into the occupied subspace (Q = I - P)
+        Q = np.eye(NUM_SITES, dtype=complex) - P
+        V1 = P @ U1 @ P + Q
+        V2 = P @ U2 @ P + Q
+
+        # 5. Form the closed-loop plaquette matrix
+        M = V1 @ V2 @ V1.conj().T @ V2.conj().T
+        
+        # 6. Extract the local markers via the principal matrix logarithm
+        # M is close to identity, so the log captures the geometric phase
+        logM = scipy.linalg.logm(M)
+        
+        # The imaginary part of the diagonal elements gives the Local Bott Index
+        local_markers = np.imag(np.diag(logM)) / (2 * np.pi)
+        
+        # For the Bott Index formulation, the TRACE (sum) is the global invariant,
+        # yielding ~ 1.0 or -1.0 in the topological phase.
+        return np.sum(local_markers)
+    '''
+
     def chern_number(self, delta, U, V, grid=N_FLUX):
         """
         Total (up+down) Chern number via Fukui-Hatsugai-Suzuki flux
-        integration: build the ground state on an NxN flux grid, form
-        gauge-invariant link variables between neighboring points, and
-        sum the discretized Berry curvature over all plaquettes.
+        integration.
         """
         angles = np.linspace(0, 2 * np.pi, grid, endpoint=False)
         psi = [[None] * grid for _ in range(grid)]
@@ -72,11 +115,11 @@ class Observables:
             for iy, fy in enumerate(angles):
                 _, p = self.solver.ground_state(delta, U, V, fx, fy, v0)
                 psi[ix][iy] = p
-                v0 = p.reshape(-1, 1)
+                v0 = p
 
-        def link(a, b):
-            ov = np.vdot(a, b)
-            return ov / abs(ov)
+        def phase(a, b):
+            braket = np.vdot(a, b)
+            return braket / abs(braket)
 
         curvature = 0.0
         for ix in range(grid):
@@ -84,10 +127,10 @@ class Observables:
             for iy in range(grid):
                 iy2 = (iy + 1) % grid
                 plaquette = (
-                    link(psi[ix][iy], psi[ix2][iy])
-                    * link(psi[ix2][iy], psi[ix2][iy2])
-                    * np.conj(link(psi[ix][iy2], psi[ix2][iy2]))
-                    * np.conj(link(psi[ix][iy], psi[ix][iy2]))
+                    phase(psi[ix][iy], psi[ix2][iy])
+                    * phase(psi[ix2][iy], psi[ix2][iy2])
+                    * np.conj(phase(psi[ix][iy2], psi[ix2][iy2]))
+                    * np.conj(phase(psi[ix][iy], psi[ix][iy2]))
                 )
                 curvature += np.angle(plaquette)
 

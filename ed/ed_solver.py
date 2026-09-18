@@ -1,5 +1,4 @@
-import numpy as np
-from .config import TOL
+from .config import TOL, K
 from .hamiltonian import Hamiltonian
 from scipy.sparse.linalg import eigsh
 
@@ -12,23 +11,9 @@ class EDSolver:
         H = self.hamiltonian.build(delta, U, V, flux_x, flux_y)
 
         if gap:
-            vals, vecs = eigsh(H, k=2, which='SA', tol=TOL, v0=v0)
+            vals, vecs = eigsh(H, k=2, which='SA', tol=TOL, v0=v0, ncv=100)
             gap = abs(vals[1] - vals[0])
             return vals[0], vecs[:, 0], gap
         else:
-            vals, vecs = eigsh(H, k=1, which='SA', tol=TOL, v0=v0)
+            vals, vecs = eigsh(H, k=1, which='SA', tol=TOL, v0=v0, ncv=100)
             return vals[0], vecs[:, 0]
-
-    def flux_sweep(self, delta, U, V, flux_points):
-        """
-        Calculates lowest energy E_gs and ground state psi_gs of H(delta, U, V, flux) 
-        for a list of flux points (flux_x, flux_y). 
-        
-        Returns an array of shape (len(flux_points), H.shape[0])
-        """
-        states, v0 = [], None
-        for fx, fy in flux_points:
-            _, psi = self.ground_state(delta, U, V, fx, fy, v0)
-            states.append(psi)
-            v0 = psi
-        return np.array(states).T

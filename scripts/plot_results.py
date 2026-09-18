@@ -6,13 +6,12 @@ from pathlib import Path
 import numpy as np
 import h5py
 import matplotlib.pyplot as plt
-from matplotlib.colors import BoundaryNorm
+from matplotlib.colors import BoundaryNorm, LogNorm
 import seaborn as sns
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-DATA_DIR = ROOT / "data/tuning"
 REGISTRY_FILE = "configs.json"
 
 IMAGES_DIR = ROOT / "images"
@@ -32,8 +31,9 @@ plt.rcParams.update({
 })
 
 
-def find_matching_file(target_config):
-    registry_path = DATA_DIR / REGISTRY_FILE
+def find_matching_file(target_config, data_dir):
+    data_dir = Path(data_dir)
+    registry_path = data_dir / REGISTRY_FILE
     if not registry_path.exists():
         return None
 
@@ -43,13 +43,18 @@ def find_matching_file(target_config):
         except json.JSONDecodeError:
             return None
 
+    def is_match(v_saved, v_target):
+        if isinstance(v_saved, (int, float)) and isinstance(v_target, (int, float)):
+            return np.isclose(v_saved, v_target, rtol=1e-5, atol=1e-15)
+        return v_saved == v_target
+
     for filename, saved_config in registry.items():
         matches = all(
-            k in saved_config and np.isclose(saved_config[k], v)
+            k in saved_config and is_match(saved_config[k], v)
             for k, v in target_config.items()
         )
         if matches:
-            path = DATA_DIR / filename
+            path = data_dir / filename
             return path if path.exists() else None
             
     return None
@@ -62,7 +67,6 @@ def load_points(results_file):
             if not all(k in group.attrs for k in ("delta", "U", "V")):
                 continue
 
-            # .get() safely handles attributes missing from the current OBS list
             points.append({
                 "delta": float(group.attrs["delta"]),
                 "u": float(group.attrs["U"]),
@@ -72,13 +76,14 @@ def load_points(results_file):
                 "sdw": group.attrs.get("sdw"),
                 "gap": group.attrs.get("gap"),
                 "chern": group.attrs.get("chern"),
+                "resta": group.attrs.get("resta"),
             })
 
     return points
 
 
-def get_points(config):
-    results_file = find_matching_file(config)
+def get_points(config, data_dir):
+    results_file = find_matching_file(config, data_dir)
     if not results_file:
         print(f"No matching file found for config: {config}")
         return []
@@ -116,143 +121,159 @@ def nearest_grid(points, x_key, y_key, value_key, n=400, xlim=None, ylim=None):
     return xg, yg, vals[nearest]
 
 
-def plot_diagram(configs, x_key, y_key, fixed_var, fixed_val, value_key, value_label, xlabel, ylabel, titles, filename=None, cmap="hot", xlim=None, ylim=None):
+def _get_obs_val(p, key):
+    val = p.get(key)
+    if val is None:
+        return None
+    if key == "gap":
+        return 1.0 / val if not np.isclose(val, 0, atol=1e-4) else np.nan
+    return val
+
+
+def plot_diagram(data_dir, configs, x_key, y_key, fixed_var, fixed_val, value_key, value_label, xlabel, ylabel, titles, filename=None, cmap="hot", xlim=None, ylim=None):
     if isinstance(configs, dict):
         configs = [configs]
-    if isinstance(titles, str):
-        titles = [titles] * len(configs)
+    n_configs = len(configs)
+
     if isinstance(value_key, str):
-        value_key = [value_key] * len(configs)
+        value_key = [value_key]
+    n_obs = len(value_key)
+
     if isinstance(value_label, str):
-        value_label = [value_label] * len(configs)
+        value_label = [value_label] * n_obs
+    elif isinstance(value_label, dict):
+        value_label = [value_label.get(k, k) for k in value_key]
+    elif isinstance(value_label, list):
+        value_label = value_label + [str(value_key[i]) for i in range(len(value_label), n_obs)]
 
-    n_plots = len(configs)
-    cols = min(3, n_plots)
-    rows = math.ceil(n_plots / cols)
-    
-    fig, axes = plt.subplots(rows, cols, figsize=(8 * cols, 6 * rows))
-    axes_flat = np.atleast_1d(axes).flatten()
-
-    for i, config in enumerate(configs):
-        ax = axes_flat[i]
-        v_key = value_key[i]
-        v_label = value_label[i]
-        
-        points = get_points(config)
-        points = filter_points(points, fixed_var, fixed_val)
-        points = crop_points(points, x_key, xlim, y_key, ylim)
-        points = [p for p in points if p[v_key] is not None]
-
-        if not points:
-            print(f'No data fits the chosen parameter constraints for config index {i} ({v_key})')
-            ax.axis('off')
-            continue
-
-        values = np.array([p[v_key] for p in points])
-        vmin, vmax = np.nanmin(values), np.nanmax(values)
-
-        if np.isclose(vmin, vmax):
-            eps = max(abs(vmin) * 0.01, 1e-12)
-            vmin, vmax = vmin - eps, vmax + eps
-
-        xs, ys, grid = nearest_grid(points, x_key, y_key, v_key, xlim=xlim, ylim=ylim)
-
-        ax.imshow(grid, origin="lower", extent=[xs[0], xs[-1], ys[0], ys[-1]],
-                  aspect="auto", cmap=cmap, vmin=vmin, vmax=vmax, zorder=1)
-        
-        scatter = ax.scatter([p[x_key] for p in points], [p[y_key] for p in points],
-                             c=values, cmap=cmap, vmin=vmin, vmax=vmax,
-                             s=65, edgecolors="black", linewidths=0.8, zorder=4)
-
-        ax.set_xlabel(xlabel)
-        ax.set_ylabel(ylabel)
-        ax.set_title(titles[i] if i < len(titles) else titles[-1])
-
-        if xlim: ax.set_xlim(xlim)
-        if ylim: ax.set_ylim(ylim)
-
-        cbar = fig.colorbar(scatter, ax=ax)
-        cbar.set_label(v_label, fontsize=plt.rcParams['axes.labelsize'])
-        cbar.ax.tick_params(labelsize=plt.rcParams['xtick.labelsize'])
-
-    for j in range(n_plots, len(axes_flat)):
-        axes_flat[j].set_visible(False)
-
-    fig.tight_layout()
-    if filename is not None:
-        fig.savefig(IMAGES_DIR / filename, dpi=200, bbox_inches="tight")
-        plt.close(fig)
-
-
-def plot_diagram_int(configs, x_key, y_key, fixed_var, fixed_val, xlabel, ylabel, titles, filename=None, cmap='viridis', xlim=None, ylim=None):
-    if isinstance(configs, dict):
-        configs = [configs]
     if isinstance(titles, str):
-        titles = [titles] * len(configs)
+        titles = [titles] * n_configs
 
-    n_plots = len(configs)
-    cols = min(3, n_plots)
-    rows = math.ceil(n_plots / cols)
-    
-    fig, axes = plt.subplots(rows, cols, figsize=(8 * cols, 6 * rows))
-    axes_flat = np.atleast_1d(axes).flatten()
+    # Handle the layout rules requested
+    if n_configs == 1:
+        n_rows = 1
+        n_cols = n_obs
+    else:
+        n_rows = n_obs
+        n_cols = n_configs
 
-    for i, config in enumerate(configs):
-        ax = axes_flat[i]
-        points = get_points(config)
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(8 * n_cols, 6 * n_rows), squeeze=False)
+
+    for c_idx, config in enumerate(configs):
+        points = get_points(config, data_dir)
         points = filter_points(points, fixed_var, fixed_val)
         points = crop_points(points, x_key, xlim, y_key, ylim)
-        points = [p for p in points if p["chern"] is not None]
 
-        if not points:
-            print(f'No data fits the chosen parameter constraints for config index {i} (chern)')
-            ax.axis('off')
-            continue
+        for o_idx, v_key in enumerate(value_key):
+            # Select the correct axis depending on the grid shape
+            if n_configs == 1:
+                ax = axes[0, o_idx]
+            else:
+                ax = axes[o_idx, c_idx]
 
-        chern_vals = [p["chern"] for p in points]
-        lo = int(round(min(chern_vals)))
-        hi = int(round(max(chern_vals)))
+            v_label = value_label[o_idx]
+            if v_label == "chern":
+                v_label = r"$\mathrm{Chern\ number}$"
 
-        if lo == hi:
-            lo -= 1
-            hi += 1
+            if v_key == "gap":
+                obs_points = []
+                for p in points:
+                    val = _get_obs_val(p, "gap")
+                    if val is not None and not np.isnan(val) and val > 0:
+                        p_copy = p.copy()
+                        p_copy["gap"] = val
+                        obs_points.append(p_copy)
+            else:
+                obs_points = [p for p in points if p.get(v_key) is not None]
 
-        xs, ys, grid = nearest_grid(points, x_key, y_key, "chern", xlim=xlim, ylim=ylim)
-        
-        num_classes = max(1, hi - lo + 1)
-        plot_cmap = plt.get_cmap(cmap, num_classes)
-        bounds = np.arange(lo - 0.5, hi + 1.5, 1.0)
-        norm = BoundaryNorm(bounds, plot_cmap.N)
+            if not obs_points:
+                print(f'No data fits the chosen parameter constraints for config index {c_idx} ({v_key})')
+                ax.axis('off')
+                continue
 
-        ax.imshow(grid, origin="lower", extent=[xs[0], xs[-1], ys[0], ys[-1]],
-                  aspect="auto", cmap=plot_cmap, norm=norm, zorder=1)
+            values = np.array([p[v_key] for p in obs_points])
+            xs, ys, grid = nearest_grid(obs_points, x_key, y_key, v_key, xlim=xlim, ylim=ylim)
+            scatter_size = 65 / (len(obs_points) / (21**2))
 
-        scatter = ax.scatter([p[x_key] for p in points], [p[y_key] for p in points],
-                             c=chern_vals, cmap=plot_cmap, norm=norm, s=65,
-                             edgecolors="black", linewidths=0.8, zorder=4)
+            if v_key == "chern":
+                lo = int(round(np.nanmin(values)))
+                hi = int(round(np.nanmax(values)))
 
-        ax.set_xlabel(xlabel)
-        ax.set_ylabel(ylabel)
-        ax.set_title(titles[i] if i < len(titles) else titles[-1])
+                if lo == hi:
+                    lo -= 1
+                    hi += 1
 
-        if xlim: ax.set_xlim(xlim)
-        if ylim: ax.set_ylim(ylim)
+                num_classes = max(1, hi - lo + 1)
+                plot_cmap_name = "viridis" if cmap == "hot" else cmap
+                plot_cmap = plt.get_cmap(plot_cmap_name, num_classes)
+                bounds = np.arange(lo - 0.5, hi + 1.5, 1.0)
+                norm = BoundaryNorm(bounds, plot_cmap.N)
 
-        ticks = list(range(lo, hi + 1))
-        cbar = fig.colorbar(scatter, ax=ax, ticks=ticks, boundaries=bounds)
-        cbar.set_label(r"$\mathrm{Chern\ number}$", fontsize=plt.rcParams['axes.labelsize'])
-        cbar.ax.tick_params(labelsize=plt.rcParams['xtick.labelsize'])
+                ax.imshow(grid, origin="lower", extent=[xs[0], xs[-1], ys[0], ys[-1]],
+                          aspect="auto", cmap=plot_cmap, norm=norm, zorder=1)
 
-    for j in range(n_plots, len(axes_flat)):
-        axes_flat[j].set_visible(False)
+                scatter = ax.scatter([p[x_key] for p in obs_points], [p[y_key] for p in obs_points],
+                                     c=values, cmap=plot_cmap, norm=norm, s=scatter_size,
+                                     edgecolors="black", linewidths=0.8, zorder=4)
+
+                ticks = list(range(lo, hi + 1))
+                cbar = fig.colorbar(scatter, ax=ax, ticks=ticks, boundaries=bounds)
+
+            elif v_key == "gap":
+                vmin, vmax = np.nanmin(values), np.nanmax(values)
+                if np.isclose(vmin, vmax):
+                    eps = max(abs(vmin) * 0.01, 1e-12)
+                    vmin, vmax = vmin - eps, vmax + eps
+
+                norm = LogNorm(vmin=vmin, vmax=vmax)
+
+                ax.imshow(grid, origin="lower", extent=[xs[0], xs[-1], ys[0], ys[-1]],
+                          aspect="auto", cmap=cmap, norm=norm, zorder=1)
+
+                scatter = ax.scatter([p[x_key] for p in obs_points], [p[y_key] for p in obs_points],
+                                     c=values, cmap=cmap, norm=norm, s=scatter_size,
+                                     edgecolors="black", linewidths=0.8, zorder=4)
+
+                cbar = fig.colorbar(scatter, ax=ax)
+
+            else:
+                vmin, vmax = np.nanmin(values), np.nanmax(values)
+
+                if np.isclose(vmin, vmax):
+                    eps = max(abs(vmin) * 0.01, 1e-12)
+                    vmin, vmax = vmin - eps, vmax + eps
+
+                ax.imshow(grid, origin="lower", extent=[xs[0], xs[-1], ys[0], ys[-1]],
+                          aspect="auto", cmap=cmap, vmin=vmin, vmax=vmax, zorder=1)
+
+                scatter = ax.scatter([p[x_key] for p in obs_points], [p[y_key] for p in obs_points],
+                                     c=values, cmap=cmap, vmin=vmin, vmax=vmax,
+                                     s=scatter_size, edgecolors="black", linewidths=0.8, zorder=4)
+
+                cbar = fig.colorbar(scatter, ax=ax)
+
+            ax.set_xlabel(xlabel)
+            ax.set_ylabel(ylabel)
+            
+            # Use the correct title for the top of each row/column dynamically 
+            if n_configs == 1 or o_idx == 0:
+                ax.set_title(titles[c_idx] if c_idx < len(titles) else titles[-1], pad=plt.rcParams["axes.titlesize"]//2)
+
+            if xlim: ax.set_xlim(xlim)
+            if ylim: ax.set_ylim(ylim)
+
+            cbar.set_label(v_label, fontsize=plt.rcParams['axes.labelsize'])
+            cbar.ax.tick_params(labelsize=plt.rcParams['xtick.labelsize'])
 
     fig.tight_layout()
     if filename is not None:
         fig.savefig(IMAGES_DIR / filename, dpi=200, bbox_inches="tight")
         plt.close(fig)
+    else:
+        return fig, axes
 
 
-def plot_1d_cut(configs, x_key, fixed_vars, value_key, ylabel, xlabel, title, filename=None, colors=None, labels=None, xlim=None, relative_to=None):
+def plot_1d_cut(data_dir, configs, x_key, fixed_vars, value_key, ylabel, xlabel, title, filename=None, colors=None, labels=None, xlim=None, relative_to=None):
     if isinstance(configs, dict):
         configs = [configs]
     n_configs = len(configs)
@@ -279,7 +300,6 @@ def plot_1d_cut(configs, x_key, fixed_vars, value_key, ylabel, xlabel, title, fi
     fig, axes = plt.subplots(rows, cols, figsize=(8 * cols, 1 + 2 * rows), sharex=True)
     axes_flat = np.atleast_1d(axes).flatten()
 
-    # Handle ylabel and title mapping for each observable subplot
     if isinstance(ylabel, str):
         ylabel_dict = {obs: ylabel for obs in value_key}
     elif isinstance(ylabel, list):
@@ -298,7 +318,6 @@ def plot_1d_cut(configs, x_key, fixed_vars, value_key, ylabel, xlabel, title, fi
     else:
         title_dict = {obs: str(obs) for obs in value_key}
 
-    # Rearrange indices so the reference configuration is processed first
     indices = list(range(n_configs))
     if relative_to is not None:
         if not (0 <= relative_to < n_configs):
@@ -313,24 +332,22 @@ def plot_1d_cut(configs, x_key, fixed_vars, value_key, ylabel, xlabel, title, fi
 
         for loop_idx, i in enumerate(indices):
             config = configs[i]
-            points = get_points(config)
+            points = get_points(config, data_dir)
             
             for f_var, f_val in fixed_vars.items():
                 points = filter_points(points, f_var, f_val)
                 
             points = crop_points(points, x_key, xlim)
 
-            # If this is the reference config (first item in the rearranged loop), save it and skip plotting
             if relative_to is not None and loop_idx == 0:
-                points = [p for p in points if p[obs] is not None]
-                ref_dict = {p[x_key]: p[obs] for p in points}
+                points = [p for p in points if _get_obs_val(p, obs) is not None and not np.isnan(_get_obs_val(p, obs))]
+                ref_dict = {p[x_key]: _get_obs_val(p, obs) for p in points}
                 continue
 
-            # For subsequent configs, filter matching x-points and subtract reference values
             if relative_to is not None:
-                points = [p for p in points if p[x_key] in ref_dict and p[obs] is not None]
+                points = [p for p in points if p[x_key] in ref_dict and _get_obs_val(p, obs) is not None and not np.isnan(_get_obs_val(p, obs))]
             else:
-                points = [p for p in points if p[obs] is not None]
+                points = [p for p in points if _get_obs_val(p, obs) is not None and not np.isnan(_get_obs_val(p, obs))]
 
             if not points:
                 continue
@@ -340,9 +357,9 @@ def plot_1d_cut(configs, x_key, fixed_vars, value_key, ylabel, xlabel, title, fi
             x_vals = [p[x_key] for p in points]
             
             if relative_to is not None:
-                y_vals = [p[obs] - ref_dict[p[x_key]] for p in points]
+                y_vals = [_get_obs_val(p, obs) - ref_dict[p[x_key]] for p in points]
             else:
-                y_vals = [p[obs] for p in points]
+                y_vals = [_get_obs_val(p, obs) for p in points]
 
             current_color = colors[i % len(colors)]
             current_label = labels[i] if i < len(labels) else None
@@ -351,7 +368,7 @@ def plot_1d_cut(configs, x_key, fixed_vars, value_key, ylabel, xlabel, title, fi
             lines_plotted += 1
 
         if lines_plotted > 0:
-            if plot_idx == 0: ax.set_title(title_dict.get(obs, str(obs)))
+            if plot_idx == 0: ax.set_title(title_dict.get(obs, str(obs)), pad=plt.rcParams["axes.titlesize"]//2)
             if plot_idx == len(value_key) - 1: ax.set_xlabel(xlabel)
             ax.set_ylabel(ylabel_dict.get(obs, str(obs)))
             

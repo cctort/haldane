@@ -10,8 +10,9 @@ T1 = 1.0
 T2 = 0.2
 PHI = 0.5 # in units of pi
 
-# ED tolerance
-TOL = 1e-7
+# ED solver parameters
+K = 5
+TOL = 0
 
 # Flux grid per dimension
 N_FLUX = 4
