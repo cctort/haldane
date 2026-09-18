@@ -102,7 +102,7 @@ class Observables:
         return np.sum(local_markers)
     '''
 
-    def chern_number(self, delta, U, V, grid=N_FLUX):
+    def chern_number(self, delta, U, V, grid=N_FLUX, site_dis=None, bond_dis=None):
         """
         Total (up+down) Chern number via Fukui-Hatsugai-Suzuki flux
         integration.
@@ -113,7 +113,7 @@ class Observables:
         v0 = None
         for ix, fx in enumerate(angles):
             for iy, fy in enumerate(angles):
-                _, p = self.solver.ground_state(delta, U, V, fx, fy, v0)
+                _, p = self.solver.ground_state(delta, U, V, fx, fy, v0, site_dis, bond_dis)
                 psi[ix][iy] = p
                 v0 = p
 

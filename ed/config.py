@@ -17,5 +17,11 @@ TOL = 0
 # Flux grid per dimension
 N_FLUX = 4
 
+# Disorder parameters
+N_SAMPLES = 1
+W0 = 0.0
+W1 = 0.0
+W2 = 0.0
+
 DTYPE = np.complex128
 VERBOSE = False

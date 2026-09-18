@@ -9,6 +9,7 @@ from mpi4py import MPI
 import numpy as np
 
 from ed import config
+from ed.lattice import Lattice
 from ed.hamiltonian import Hamiltonian
 from ed.ed_solver import EDSolver
 from ed.observables import Observables
@@ -26,9 +27,12 @@ CONFIG = {
     'T1': 1.0,
     'T2': 0.2,
     'PHI': 0.5,
-    'K': 5,
-    'TOL': 1e-12,
+    'TOL': 0,
     'N_FLUX': 10,
+    'N_SAMPLES': 1,
+    'W0': 0.0,
+    'W1': 0.0,
+    'W2': 0.0
 }
 for key, value in CONFIG.items():
     setattr(config, key, value)
@@ -46,7 +50,7 @@ RANGES = {
 OBS = ['chern']
 
 # if True removes all previous values for the current OBS elements
-REPLACE_OBS = False
+REPLACE_OBS = True
 
 
 def chunk(points, rank, size):
@@ -63,44 +67,78 @@ def make_point(sweep_values):
     return (d.get('delta', 0.0), d.get('U', 0.0), d.get('V', 0.0))
 
 
-def sweep(points, solver, observables, rank):
+def sweep(points, lattice, solver, observables, rank):
     results = {}
-    v0 = None
     t0 = time.time()
-    
     calc_gap = 'gap' in OBS
 
     for pt in points:
         delta, U, V = make_point(pt)
-        res = solver.ground_state(delta, U, V, gap=calc_gap, v0=v0)
-
-        E, psi = res[:2]
-        v0 = psi
         
+        # Generate disorder configurations for this parameter point
+        site_dis_list, bond_dis_list = disorder_config(lattice)
+        
+        # Lists to store metrics across realizations
+        sample_data = {obs_key: [] for obs_key in OBS}
+
+        for s in range(config.N_SAMPLES):
+            # Pass disorder configurations directly into ground_state
+            res = solver.ground_state(
+                delta, U, V, 
+                gap=calc_gap, 
+                v0=None,
+                site_dis=site_dis_list[s],
+                bond_dis=bond_dis_list[s]
+            )
+
+            E, psi = res[0], res[1]
+            
+            if 'E_gs' in OBS:
+                sample_data['E_gs'].append(E)
+            if 'gap' in OBS:
+                sample_data['gap'].append(res[2])
+            if 'cdw' in OBS:
+                sample_data['cdw'].append(observables.cdw(psi))
+            if 'sdw' in OBS:
+                sample_data['sdw'].append(observables.sdw(psi))
+            if 'resta' in OBS:
+                sample_data['resta'].append(observables.resta_marker(psi))
+            if 'chern' in OBS:
+                sample_data['chern'].append(observables.chern_number(delta, U, V, grid=config.N_FLUX, 
+                                             site_dis=site_dis_list[s], bond_dis=bond_dis_list[s]))
+
+        # Store mean and standard deviation for each observable
         pt_data = {}
-        
-        if 'E_gs' in OBS:
-            pt_data['E_gs'] = E
-            
-        if 'gap' in OBS:
-            pt_data['gap'] = res[2]
-            
-        if 'cdw' in OBS:
-            pt_data['cdw'] = observables.cdw(psi)
-            
-        if 'sdw' in OBS:
-            pt_data['sdw'] = observables.sdw(psi)
-            
-        if 'chern' in OBS:
-            pt_data['chern'] = observables.chern_number(delta, U, V, config.N_FLUX)
-
-        if 'resta' in OBS:
-            pt_data['resta'] = observables.resta_marker(psi)
+        for key, vals in sample_data.items():
+            pt_data[key] = np.mean(vals)
+            pt_data[f"{key}_std"] = np.std(vals)
 
         results[(delta, U, V)] = pt_data
 
     print(f"rank {rank}: {len(points)} points in {time.time()-t0:.1f}s")
     return results
+
+
+def disorder_config(lattice):
+    site_dis_list = []
+    bond_dis_list = []
+    
+    for _ in range(config.N_SAMPLES):
+        # Site disorder in [-W0/2, W0/2]
+        site_dis_list.append((np.random.rand(config.NUM_SITES) - 0.5) * config.W0)
+        
+        # Bond disorder: NN bonds (W1) and NNN bonds (W2)
+        sample_bonds = {
+            (i, j): (np.random.rand() - 0.5) * config.W1 
+            for i, j, _ in lattice.nn_bonds
+        }
+        sample_bonds.update({
+            (i, j): (np.random.rand() - 0.5) * config.W2 
+            for i, j, _ in lattice.nnn_bonds
+        })
+        bond_dis_list.append(sample_bonds)
+
+    return site_dis_list, bond_dis_list
 
 
 def get_current_config():
@@ -112,9 +150,12 @@ def get_current_config():
         'T1': config.T1,
         'T2': config.T2,
         'PHI': config.PHI,
-        'K': config.K,
         'TOL': config.TOL,
         'N_FLUX': config.N_FLUX,
+        'N_SAMPLES': config.N_SAMPLES,
+        'W0': config.W0,
+        'W1': config.W1,
+        'W2': config.W2
     }
 
 
@@ -214,6 +255,7 @@ def main():
 
     comm.Barrier()
 
+    lattice = Lattice()
     solver = EDSolver(Hamiltonian())
     observables = Observables(solver)
 
@@ -222,7 +264,7 @@ def main():
     
     my_points = chunk(all_points, rank, size)
 
-    my_results = sweep(my_points, solver, observables, rank)
+    my_results = sweep(my_points, lattice, solver, observables, rank)
     all_results = comm.gather(my_results, root=0)
 
     if rank == 0:
