@@ -113,7 +113,7 @@ class Observables:
         v0 = None
         for ix, fx in enumerate(angles):
             for iy, fy in enumerate(angles):
-                _, p = self.solver.ground_state(delta, U, V, fx, fy, v0, site_dis, bond_dis)
+                _, p = self.solver.ground_state(delta, U, V, fx, fy, v0, False, site_dis, bond_dis)
                 psi[ix][iy] = p
                 v0 = p
 

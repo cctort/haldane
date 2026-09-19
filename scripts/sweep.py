@@ -14,7 +14,7 @@ from ed.hamiltonian import Hamiltonian
 from ed.ed_solver import EDSolver
 from ed.observables import Observables
 
-DATA_DIR = Path('./data/clean')
+DATA_DIR = Path('./data/disorder')
 RESULTS_FILE = 'sweep.h5'
 REGISTRY_FILE = 'configs.json'
 
@@ -29,9 +29,9 @@ CONFIG = {
     'PHI': 0.5,
     'TOL': 0,
     'N_FLUX': 10,
-    'N_SAMPLES': 1,
+    'N_SAMPLES': 15,
     'W0': 0.0,
-    'W1': 0.0,
+    'W1': 0.5,
     'W2': 0.0
 }
 for key, value in CONFIG.items():
@@ -41,16 +41,16 @@ SWEEP_VARS = ('U', 'V')
 FIXED_VARS = {'delta': 0.0}
 
 RANGES = {
-    'delta': np.linspace(0, 4, 21),
-    'U': np.linspace(0, 12.5, 21),
-    'V': np.linspace(0, 4, 21)
+    'delta': np.linspace(0, 4, 14),
+    'U': np.linspace(0, 12.5, 14),
+    'V': np.linspace(0, 4, 14)
 }
 
 # Options: 'E_gs', 'cdw', 'sdw', 'gap', 'chern'
 OBS = ['chern']
 
 # if True removes all previous values for the current OBS elements
-REPLACE_OBS = True
+REPLACE_OBS = False
 
 
 def chunk(points, rank, size):
@@ -208,6 +208,9 @@ def save(results, path):
                 for key in OBS:
                     if key in grp.attrs:
                         del grp.attrs[key]
+                    std_key = f"{key}_std"
+                    if std_key in grp.attrs:
+                        del grp.attrs[std_key]
 
         # Overwrite specified observables for the points in the current run
         for (delta, U, V), data in results.items():
