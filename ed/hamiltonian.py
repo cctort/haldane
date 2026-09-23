@@ -102,11 +102,10 @@ class Hamiltonian:
         #self.get_diagonal = lru_cache(maxsize=1)(
         #    lambda delta, U, V: diagonal(self.occ_dn, self.occ_up, delta, U, V)
         #)
-
+        
     def build(self, delta, U, V, flux_x=0.0, flux_y=0.0, site_dis=None, bond_dis=None):
         H_up = hopping_matrix(self.basis.up.states, flux_x, flux_y, bond_dis)
         H_dn = H_up if self.basis.dn is self.basis.up else hopping_matrix(self.basis.dn.states, flux_x, flux_y, bond_dis)
-        H_up_T = H_up.T.tocsr()
         
         #diag = self.get_diagonal(delta, U, V)
         diag = diagonal(self.occ_dn, self.occ_up, delta, U, V, site_dis)
@@ -115,7 +114,7 @@ class Hamiltonian:
 
         def matvec(v):
             M = v.reshape(dim_dn, dim_up) # len(v) = dim = dim_up * dim_dn
-            out = H_dn @ M + M @ H_up_T + diag * M # Same as (H_up \otimes id_dn + id_up \otimes H_dn + diag) v
+            out = H_dn @ M + M @ H_up.T + diag * M # Same as (H_up \otimes id_dn + id_up \otimes H_dn + diag) v
             return out.reshape(dim)
 
         return LinearOperator(shape=(dim, dim), matvec=matvec, rmatvec=matvec, dtype=DTYPE)

@@ -1,5 +1,5 @@
 import numpy as np
-from .lattice import NUM_SITES, SUB_SIGN, POSITIONS
+from .lattice import NUM_SITES, SUB_SIGN
 from .basis import BASIS
 from .hamiltonian import hop_element, occupation_table
 from .config import N_FLUX
@@ -102,36 +102,57 @@ class Observables:
         return np.sum(local_markers)
     '''
 
-    def chern_number(self, delta, U, V, grid=N_FLUX, site_dis=None, bond_dis=None):
+    def chern_number(self, delta, U, V, grid=N_FLUX, v0=None, site_dis=None, bond_dis=None):
         """
         Total (up+down) Chern number via Fukui-Hatsugai-Suzuki flux
-        integration.
+        integration, with adaptive refinement and corner caching.
         """
+        self.flux_cache = {}
         angles = np.linspace(0, 2 * np.pi, grid, endpoint=False)
-        psi = [[None] * grid for _ in range(grid)]
-
-        v0 = None
-        for ix, fx in enumerate(angles):
-            for iy, fy in enumerate(angles):
-                _, p = self.solver.ground_state(delta, U, V, fx, fy, v0, False, site_dis, bond_dis)
-                psi[ix][iy] = p
-                v0 = p
-
-        def phase(a, b):
-            braket = np.vdot(a, b)
-            return braket / abs(braket)
-
         curvature = 0.0
         for ix in range(grid):
             ix2 = (ix + 1) % grid
             for iy in range(grid):
                 iy2 = (iy + 1) % grid
-                plaquette = (
-                    phase(psi[ix][iy], psi[ix2][iy])
-                    * phase(psi[ix2][iy], psi[ix2][iy2])
-                    * np.conj(phase(psi[ix][iy2], psi[ix2][iy2]))
-                    * np.conj(phase(psi[ix][iy], psi[ix][iy2]))
-                )
-                curvature += np.angle(plaquette)
-
+                curvature += self.adaptive_curvature(delta, U, V, angles[ix], angles[iy], angles[ix2], angles[iy2],
+                                                     site_dis, bond_dis, v0, threshold=np.pi / 4, depth=0, max_depth=6)
         return curvature / (2 * np.pi)
+
+    def gs_with_fluxcache(self, delta, U, V, fx, fy, site_dis, bond_dis, v0=None):
+        key = (round(fx % (2 * np.pi), 9), round(fy % (2 * np.pi), 9))
+        psi = self.flux_cache.get(key)
+        if psi is None:
+            _, psi = self.solver.ground_state(delta, U, V, fx, fy, v0, False, site_dis, bond_dis)
+            self.flux_cache[key] = psi
+        return psi
+
+    def curvature(self, delta, U, V, fx0, fy0, fx1, fy1, site_dis, bond_dis, v0=None):
+        corners = [(fx0, fy0), (fx1, fy0), (fx1, fy1), (fx0, fy1)]
+        v = v0
+        psi = []
+        for fx, fy in corners:
+            v = self.gs_with_fluxcache(delta, U, V, fx, fy, site_dis, bond_dis, v)
+            psi.append(v)
+
+        def phase(a, b):
+            phi = np.vdot(a, b)
+            return phi / abs(phi)
+
+        curv = np.angle(phase(psi[0], psi[1]) * phase(psi[1], psi[2])
+                        * np.conj(phase(psi[3], psi[2])) * np.conj(phase(psi[0], psi[3])))
+        return curv, v
+
+    def adaptive_curvature(self, delta, U, V, fx0, fy0, fx1, fy1, site_dis, bond_dis,
+                            v0=None, threshold=np.pi / 4, depth=0, max_depth=2):
+        curv, v0 = self.curvature(delta, U, V, fx0, fy0, fx1, fy1, site_dis, bond_dis, v0)
+        if abs(curv) < threshold or depth >= max_depth:
+            fxm, fym = 0.5 * (fx0 + fx1), 0.5 * (fy0 + fy1)
+            print((fxm, fym), curv)
+            return curv
+        fxm, fym = 0.5 * (fx0 + fx1), 0.5 * (fy0 + fy1)
+        total = 0.0
+        for (a, b, c, d) in [(fx0, fy0, fxm, fym), (fxm, fy0, fx1, fym),
+                            (fx0, fym, fxm, fy1), (fxm, fym, fx1, fy1)]:
+            total += self.adaptive_curvature(delta, U, V, a, b, c, d, site_dis, bond_dis,
+                                             v0=v0, threshold=threshold, depth=depth + 1, max_depth=max_depth)
+        return total

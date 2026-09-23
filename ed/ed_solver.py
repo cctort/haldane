@@ -1,4 +1,4 @@
-from .config import TOL, K
+from .config import TOL
 from .hamiltonian import Hamiltonian
 from scipy.sparse.linalg import eigsh
 
@@ -11,7 +11,7 @@ class EDSolver:
         H = self.hamiltonian.build(delta, U, V, flux_x, flux_y, site_dis, bond_dis)
 
         if gap:
-            vals, vecs = eigsh(H, k=2, which='SA', tol=TOL, v0=v0)
+            vals, vecs = eigsh(H, k=2, which='SA', tol=TOL, v0=v0, ncv=100)
             gap = abs(vals[1] - vals[0])
             return vals[0], vecs[:, 0], gap
         else:

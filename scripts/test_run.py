@@ -10,19 +10,20 @@ def info(t):
     print(f"time: {time.time()-t:.3f}s | memory: {p.memory_info().rss/1024**2:.1f} MB")
 
 DELTA = 0.0
-U = 10.0
+U = 8.0
 V = 0.0
 
 t = time.time()
 hamiltonian = Hamiltonian()
+hamiltonian.build(DELTA, U, V)
 print(f"Hamiltonian built, delta={DELTA:.5g}, U={U:.5g}, V={V:.5g},", end=" ")
 info(t)
 
 solver = EDSolver(hamiltonian)
 
 t = time.time()
-Egs, psi, gap = solver.ground_state(DELTA, U, V, gap=True)
-print(f"Ground state found, Egs={Egs}, gap={gap}", end=" ")
+Egs, psi = solver.ground_state(DELTA, U, V, gap=False)
+print(f"Ground state found, Egs={Egs}, gap={0}", end=" ")
 info(t)
 
 observables = Observables(solver)
@@ -38,7 +39,7 @@ print(f"SDW: {sdw:.5g},", end=" ")
 info(t)
 
 t = time.time()
-chern = observables.chern_number(DELTA, U, V, 10)
+chern = observables.chern_number(DELTA, U, V, 4)
 print(f"Chern number: {chern:.5g},", end=" ")
 info(t)
 

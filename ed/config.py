@@ -11,8 +11,7 @@ T2 = 0.2
 PHI = 0.5 # in units of pi
 
 # ED solver parameters
-K = 5
-TOL = 0
+TOL = 1e-15
 
 # Flux grid per dimension
 N_FLUX = 4
