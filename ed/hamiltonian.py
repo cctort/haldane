@@ -1,9 +1,8 @@
 import numpy as np
-from functools import lru_cache
 from scipy import sparse
 from scipy.sparse.linalg import LinearOperator
 from .config import T1, T2, PHI, DTYPE
-from .lattice import LATTICE, NUM_SITES, SUB_SIGN
+from .lattice import LATTICE
 from .basis import BASIS
 
 
@@ -35,25 +34,25 @@ def hop_element(states, i, j):
     return entries
 
 
-def hopping_matrix(states, flux_x, flux_y, bond_dis=None):
+def hopping_matrix(states, lattice, t1=T1, t2=T2, phi=PHI, flux_x=0.0, flux_y=0.0, bond_dis=None):
     """Spin-resolved hopping matrix c_i^dagger c_j + h.c. for each flux value."""
     dim = len(states)
     rows, cols, vals = [], [], []
 
-    for i, j, shift in LATTICE.nn_bonds:
+    for i, j, shift in lattice.bonds[1]:
         n1, n2 = shift
         dt = bond_dis.get((i, j), 0.0) if bond_dis else 0.0
-        amp = - (T1 + dt) * np.exp(1j * (n1 * flux_x + n2 * flux_y))
+        amp = - (t1 + dt) * np.exp(1j * (n1 * flux_x + n2 * flux_y))
         for bra, ket, sign in hop_element(states, i, j):
             rows += [ket, bra]
             cols += [bra, ket]
             vals += [sign * amp, sign * np.conj(amp)]
 
-    for i, j, shift in LATTICE.nnn_bonds:
+    for i, j, shift in lattice.bonds[2]:
         n1, n2 = shift
-        nu = LATTICE.chirality(i, j, shift)
+        nu = lattice.chirality(i, j, shift)
         dt2 = bond_dis.get((i, j), 0.0) if bond_dis else 0.0
-        amp = - (T2 + dt2) * np.exp(1j * np.pi * nu * PHI) * np.exp(1j * (n1 * flux_x + n2 * flux_y))
+        amp = - (t2 + dt2) * np.exp(1j * np.pi * nu * phi) * np.exp(1j * (n1 * flux_x + n2 * flux_y))
         for bra, ket, sign in hop_element(states, i, j):
             rows += [ket, bra]
             cols += [bra, ket]
@@ -62,25 +61,25 @@ def hopping_matrix(states, flux_x, flux_y, bond_dis=None):
     return sparse.coo_matrix((vals, (rows, cols)), shape=(dim, dim), dtype=DTYPE).tocsr()
 
 
-def occupation_table(states):
-    """<j|n_i|j> for all sites i and states j, stored as a (NUM_SITES, dim) array."""
-    return np.array([[occupied(s, site) for s in states] for site in range(NUM_SITES)], dtype=float)
+def occupation_table(states, n_sites):
+    """<j|n_i|j> for all sites i and states j, stored as a (N_S, dim) array."""
+    return np.array([[occupied(s, site) for s in states] for site in range(n_sites)], dtype=float)
 
 
-def diagonal(occ_dn, occ_up, delta, U, V, site_dis=None):
+def diagonal(lattice, occ_dn, occ_up, delta, U, V, site_dis=None):
     """(dim_dn, dim_up) diagonal of H from the staggered potential, U, V."""
     diag = np.zeros((occ_dn.shape[1], occ_up.shape[1]))
 
     if delta:
-        stag_dn = SUB_SIGN @ occ_dn
-        stag_up = SUB_SIGN @ occ_up
+        stag_dn = lattice.signs @ occ_dn
+        stag_up = lattice.signs @ occ_up
         diag += delta * (stag_dn[:, None] + stag_up[None, :])
 
     if U:
         diag += U * (occ_dn.T @ occ_up)
 
     if V:
-        for i, j, _ in LATTICE.nn_bonds:
+        for i, j, _ in lattice.bonds[1]:
             n_i = occ_dn[i][:, None] + occ_up[i][None, :]
             n_j = occ_dn[j][:, None] + occ_up[j][None, :]
             diag += V * n_i * n_j
@@ -94,27 +93,23 @@ def diagonal(occ_dn, occ_up, delta, U, V, site_dis=None):
 
 
 class Hamiltonian:
-    def __init__(self):
-        self.basis = BASIS
-        self.occ_up = occupation_table(BASIS.up.states)
-        self.occ_dn = self.occ_up if BASIS.dn is BASIS.up else occupation_table(BASIS.dn.states)
+    def __init__(self, basis=BASIS, lattice=LATTICE):
+        self.basis = basis
+        self.lattice = lattice
+        self.occ_up = occupation_table(basis.up.states, lattice.n_sites)
+        self.occ_dn = self.occ_up if basis.dn is basis.up else occupation_table(basis.dn.states, lattice.n_sites)
 
-        #self.get_diagonal = lru_cache(maxsize=1)(
-        #    lambda delta, U, V: diagonal(self.occ_dn, self.occ_up, delta, U, V)
-        #)
-        
-    def build(self, delta, U, V, flux_x=0.0, flux_y=0.0, site_dis=None, bond_dis=None):
-        H_up = hopping_matrix(self.basis.up.states, flux_x, flux_y, bond_dis)
-        H_dn = H_up if self.basis.dn is self.basis.up else hopping_matrix(self.basis.dn.states, flux_x, flux_y, bond_dis)
-        
-        #diag = self.get_diagonal(delta, U, V)
-        diag = diagonal(self.occ_dn, self.occ_up, delta, U, V, site_dis)
-
+    def build(self, delta, U, V, t1=T1, t2=T2, phi=PHI, flux_x=0.0, flux_y=0.0, site_dis=None, bond_dis=None):
+        H_up = hopping_matrix(self.basis.up.states, self.lattice, t1, t2, phi, flux_x, flux_y, bond_dis)
+        H_dn = H_up if self.basis.dn is self.basis.up else hopping_matrix(self.basis.dn.states, self.lattice, t1, t2, phi, flux_x, flux_y, bond_dis)
+        H_up_T = H_up.T.tocsr()
+    
+        diag = diagonal(self.lattice, self.occ_dn, self.occ_up, delta, U, V, site_dis)
         dim_up, dim_dn, dim = self.basis.dim_up, self.basis.dim_dn, self.basis.dim
 
         def matvec(v):
             M = v.reshape(dim_dn, dim_up) # len(v) = dim = dim_up * dim_dn
-            out = H_dn @ M + M @ H_up.T + diag * M # Same as (H_up \otimes id_dn + id_up \otimes H_dn + diag) v
+            out = H_dn @ M + M @ H_up_T + diag * M # Same as (H_up \otimes id_dn + id_up \otimes H_dn + diag) v
             return out.reshape(dim)
 
         return LinearOperator(shape=(dim, dim), matvec=matvec, rmatvec=matvec, dtype=DTYPE)

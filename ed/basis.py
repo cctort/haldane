@@ -1,10 +1,12 @@
 import numpy as np
 from itertools import combinations
-from .lattice import NUM_SITES
-from .config import N_UP, N_DN
+from .lattice import LATTICE
+from .config import FILLING, SZ
 
+def get_n_electrons(filling=FILLING, n_sites=LATTICE.n_sites):
+    return np.round(2*filling*n_sites)
 
-def build_states(n_sites, n_electrons):
+def build_states(n_electrons, n_sites):
     """
     Each configuration (a combination of n_electrons among n_sites elements)
     is represented as an integer using a bitstring: bit b = 1 means that
@@ -41,9 +43,9 @@ def build_states(n_sites, n_electrons):
     return np.array(sorted(states), dtype=np.int64)
 
 
-class SpinBasis:
-    def __init__(self, n_electrons):
-        self.states = build_states(NUM_SITES, n_electrons)
+class Basis:
+    def __init__(self, n_electrons, n_sites=LATTICE.n_sites):
+        self.states = build_states(n_electrons, n_sites)
         self.dim = len(self.states)
 
     def index(self, state):
@@ -52,13 +54,17 @@ class SpinBasis:
         return i if i < self.dim and self.states[i] == state else -1
 
 
-class FullBasis:
-    def __init__(self):
-        self.up = SpinBasis(N_UP)
+class SpinfulBasis:
+    def __init__(self, filling=FILLING, Sz=SZ, n_sites=LATTICE.n_sites):
+        self.n_electrons = np.round(2*filling*n_sites)
+        self.n_up = int(filling*n_sites + Sz)
+        self.n_dn = int(filling*n_sites - Sz)
+        
+        self.up = Basis(self.n_up)
         # Reuse the same basis object when both sectors are identical (read-only objects)
-        self.dn = self.up if N_DN == N_UP else SpinBasis(N_DN)
+        self.dn = self.up if self.n_dn == self.n_up else Basis(self.n_dn)
         self.dim_up = self.up.dim
         self.dim_dn = self.dn.dim
         self.dim = self.dim_up * self.dim_dn
 
-BASIS = FullBasis()
+BASIS = SpinfulBasis()

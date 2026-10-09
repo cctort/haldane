@@ -14,25 +14,16 @@ from ed.hamiltonian import Hamiltonian
 from ed.ed_solver import EDSolver
 from ed.observables import Observables
 
-DATA_DIR = Path('./data/disorder')
+DATA_DIR = Path('./data/ed_diagrams')
 RESULTS_FILE = 'sweep.h5'
 REGISTRY_FILE = 'configs.json'
 
-CONFIG = {
-    'NUM_SITES': 12,
-    'NUM_ELECTRONS': 12,
-    'N_UP': 6,
-    'N_DN': 6,
-    'T1': 1.0,
-    'T2': 0.2,
-    'PHI': 0.5,
-    'TOL': 0,
-    'N_FLUX': 10,
-    'N_SAMPLES': 15,
-    'W0': 0.0,
-    'W1': 2.0,
-    'W2': 0.0
-}
+CONFIG = {'CELL': 'honeycomb', 'CLUSTER': 'A', 'N_MAX': [1, 2], # Lattice
+          'FILLING': 0.5, 'SZ': 0.0, # Electron filling and total spin
+          'T1': 1.0, 'T2': 0.2, 'PHI': 0.5, # Physical parameters
+          'TOL': 0, 'N_FLUX': 10, # ED tolerance and Chern number flux grid
+          'N_SAMPLES': 1, 'W0': 0.0, 'W1': 0.0, 'W2': 0.0} # Disorder
+
 for key, value in CONFIG.items():
     setattr(config, key, value)
 
@@ -46,7 +37,7 @@ RANGES = {
 }
 
 # Possible observables: 'E_gs', 'gap', 'cdw', 'sdw', 'resta', 'chern'
-OBS = ['chern']
+OBS = ['E_gs', 'gap', 'cdw', 'sdw']
 REPLACE_OBS = False
 
 
@@ -55,14 +46,14 @@ def disorder_config(lattice):
     bond_dis_list = []
     
     for _ in range(config.N_SAMPLES):
-        site_dis_list.append((np.random.rand(config.NUM_SITES) - 0.5) * config.W0)
+        site_dis_list.append((np.random.rand(lattice.n_sites) - 0.5) * config.W0)
         sample_bonds = {
             (i, j): (np.random.rand() - 0.5) * config.W1 
-            for i, j, _ in lattice.nn_bonds
+            for i, j, _ in lattice.bonds[1]
         }
         sample_bonds.update({
             (i, j): (np.random.rand() - 0.5) * config.W2 
-            for i, j, _ in lattice.nnn_bonds
+            for i, j, _ in lattice.bonds[2]
         })
         bond_dis_list.append(sample_bonds)
 
@@ -82,37 +73,25 @@ def sweep(points, lattice, solver, observables, rank, v0=None):
         sample_data = {obs_key: [] for obs_key in OBS}
 
         for s in range(config.N_SAMPLES):
-            res = solver.ground_state(
-                delta, U, V, 
-                gap=calc_gap, 
-                v0=v0,
-                site_dis=site_dis_list[s],
-                bond_dis=bond_dis_list[s]
-            )
-
+            res = solver.ground_state(delta, U, V, config.T1, config.T2, config.PHI, gap=calc_gap, v0=v0,
+                                      site_dis=site_dis_list[s], bond_dis=bond_dis_list[s])
             E, psi = res[0], res[1]
-            v0 = psi  
+            v0 = psi
 
             if 'E_gs' in OBS:
                 sample_data['E_gs'].append(E)
             if 'gap' in OBS:
                 sample_data['gap'].append(res[2])
-            if 'cdw' in OBS:
-                sample_data['cdw'].append(observables.cdw(psi))
-            if 'sdw' in OBS:
-                sample_data['sdw'].append(observables.sdw(psi))
-            if 'resta' in OBS:
-                sample_data['resta'].append(observables.resta_marker(psi))
+            if 'corr_charge' in OBS:
+                sample_data['cdw'].append(observables.corr_charge(psi))
+            if 'corr_spin' in OBS:
+                sample_data['sdw'].append(observables.corr_spin(psi))
             if 'chern' in OBS:
-                sample_data['chern'].append(observables.chern_number(delta, U, V, grid=config.N_FLUX, v0=None,
-                                                                     site_dis=site_dis_list[s], bond_dis=bond_dis_list[s]))
+                chern, _ = observables.chern_number(delta, U, V, grid=config.N_FLUX, v0=v0,
+                                                    site_dis=site_dis_list[s], bond_dis=bond_dis_list[s])
+                sample_data['chern'].append(chern)
 
-        pt_data = {}
-        for key, vals in sample_data.items():
-            pt_data[key] = np.mean(vals)
-            pt_data[f"{key}_std"] = np.std(vals)
-
-        results[(delta, U, V)] = pt_data
+        results[(delta, U, V)] = sample_data
 
         d_vals = {'delta': delta, 'U': U, 'V': V}
         sweep_str = ", ".join([f"{var}={d_vals[var]:.4f}" for var in SWEEP_VARS])
@@ -122,21 +101,11 @@ def sweep(points, lattice, solver, observables, rank, v0=None):
 
 
 def get_current_config():
-    return {
-        'NUM_SITES': config.NUM_SITES,
-        'NUM_ELECTRONS': config.NUM_ELECTRONS,
-        'N_UP': config.N_UP,
-        'N_DN': config.N_DN,
-        'T1': config.T1,
-        'T2': config.T2,
-        'PHI': config.PHI,
-        'TOL': config.TOL,
-        'N_FLUX': config.N_FLUX,
-        'N_SAMPLES': config.N_SAMPLES,
-        'W0': config.W0,
-        'W1': config.W1,
-        'W2': config.W2
-    }
+    return {'CELL': config.CELL, 'CLUSTER': config.CLUSTER, 'N_MAX': config.N_MAX,
+            'FILLING': config.FILLING, 'SZ': config.SZ,
+            'T1': config.T1, 'T2': config.T2, 'PHI': config.PHI,
+            'TOL': config.TOL, 'N_FLUX': config.N_FLUX,
+            'N_SAMPLES': config.N_SAMPLES, 'W0': config.W0, 'W1': config.W1, 'W2': config.W2}
 
 
 def get_config_hash(config_dict):
@@ -212,7 +181,7 @@ def main():
         print(f"CONFIG HASH   : {config_hash}")
         print(f"TARGET FILE   : {RESULTS_FILE.replace('.h5', f'_{config_hash}.h5')}")
         print("CONFIGURATION :")
-        print(json.dumps(current_config, indent=2))
+        print(json.dumps(current_config))
         print("FIXED PARAMS : ", FIXED_VARS)
         print("VARYING PARAMS : ", {var : (float(RANGES[var][0]), float(RANGES[var][-1]), len(RANGES[var])) for var in SWEEP_VARS})
         print("EVALUATING OBSERVABLES : ", OBS)
@@ -222,6 +191,7 @@ def main():
     comm.Barrier()
 
     lattice = Lattice()
+    print(f'Lattice built, Nsites = {lattice.n_sites}')
     solver = EDSolver(Hamiltonian())
     observables = Observables(solver)
 
