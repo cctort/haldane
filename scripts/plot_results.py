@@ -91,36 +91,38 @@ _SIGNS_CACHE = {}
 def _sublattice_signs(cell, cluster, n_max):
     key = (cell, cluster, tuple(int(n) for n in n_max))
     if key not in _SIGNS_CACHE:
+        from ed.config import Config
         from ed.lattice import Lattice
-        _SIGNS_CACHE[key] = np.asarray(Lattice(cell, cluster, np.array(key[2])).signs, dtype=float)
+        cfg = Config(cell=cell, cluster=cluster, n_max=list(key[2]))
+        _SIGNS_CACHE[key] = np.asarray(Lattice(cfg).signs, dtype=float)
     return _SIGNS_CACHE[key]
 
 
-def _structure_factors(p, signs):
-    ones = np.ones_like(signs)
+def _q_factors(C, signs):
+    """S(q=0) and S(q=pi) of a correlation matrix, or of a stack of them (n_samples, n, n)."""
+    return C.sum(axis=(-2, -1)), (C * np.outer(signs, signs)).sum(axis=(-2, -1))
+
+
+def _structure_factors(p, signs, filling):
     n_sites = len(signs)
 
     if "corr_sz" in p:
         C_sz = np.asarray(p["corr_sz"], dtype=float)
-        p["ss_z_q0"] = np.einsum("i,...ij,j->...", ones, C_sz, ones)
-        p["ss_z_qpi"] = np.einsum("i,...ij,j->...", signs, C_sz, signs)
+        p["ss_z_q0"], p["ss_z_qpi"] = _q_factors(C_sz, signs)
         p["chi_z_sg"] = np.sum((C_sz * n_sites)**2, axis=(-2, -1)) / n_sites
 
     if "corr_sx" in p:
         C_sx = np.asarray(p["corr_sx"], dtype=float)
-        p["ss_x_q0"] = np.einsum("i,...ij,j->...", ones, C_sx, ones)
-        p["ss_x_qpi"] = np.einsum("i,...ij,j->...", signs, C_sx, signs)
+        p["ss_x_q0"], p["ss_x_qpi"] = _q_factors(C_sx, signs)
         p["chi_x_sg"] = np.sum((C_sx * n_sites)**2, axis=(-2, -1)) / n_sites
 
-    if "corr_charge" in p:
-        C_raw = np.asarray(p["corr_charge"], dtype=float)
-        p["sc_q0"] = np.einsum("i,...ij,j->...", ones, C_raw, ones)
-        p["sc_qpi"] = np.einsum("i,...ij,j->...", signs, C_raw, signs)
-        
-        filling = p.get("filling", 0.5)
-        n_bar = 2.0 * filling
-        C_conn = C_raw - (n_bar**2) / n_sites
-        p["corr_charge_connected"] = C_conn
+    if "corr_ch" in p:
+        C_raw = np.asarray(p["corr_ch"], dtype=float)
+        p["sc_q0"], p["sc_qpi"] = _q_factors(C_raw, signs)
+
+        # <n_i> from sum_j <n_i n_j> = N_el <n_i>, with N_el = 2 * filling * n_sites fixed
+        n_i = C_raw.sum(axis=-1) / (2 * filling)
+        C_conn = C_raw - n_i[..., :, None] * n_i[..., None, :] / n_sites
         p["chi_z_cg"] = np.sum((C_conn * n_sites)**2, axis=(-2, -1)) / n_sites
 
 
@@ -131,7 +133,7 @@ def load_data(data_dir, config, fixed_vars=None, x_key=None, xlim=None, y_key=No
     points = []
     with h5py.File(file_path, "r") as f:
         signs = None
-        if all(k in f.attrs for k in ("CELL", "CLUSTER", "N_MAX")):
+        if all(k in f.attrs for k in ("CELL", "CLUSTER", "N_MAX", "FILLING")):
             try:
                 signs = _sublattice_signs(str(f.attrs["CELL"]), str(f.attrs["CLUSTER"]), f.attrs["N_MAX"])
             except Exception as e:
@@ -148,7 +150,7 @@ def load_data(data_dir, config, fixed_vars=None, x_key=None, xlim=None, y_key=No
                         val = grp[k][()]
                         p[kl] = val.item() if isinstance(val, np.ndarray) and val.ndim == 0 else val
                 if signs is not None:
-                    _structure_factors(p, signs)
+                    _structure_factors(p, signs, float(f.attrs["FILLING"]))
                 points.append(p)
 
     if fixed_vars:

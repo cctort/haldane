@@ -52,10 +52,10 @@ class Observables:
         return (n_up_n_up - n_up_n_dn - n_up_n_dn.T + n_dn_n_dn) / (4 * self.lattice.n_sites)
     
     def hopping_op(self, states, i, j):
-        """Build sparse operator matrix for c^\dagger_i c_j using hop_element."""
+        r"""Build sparse operator matrix for c^\dagger_i c_j using hop_element."""
         dim = len(states)
         rows, cols, vals = [], [], []
-        for bra, ket, sign in hop_element(states, i, j):
+        for ket, bra, sign in hop_element(states, i, j):
             rows.append(bra)
             cols.append(ket)
             vals.append(sign)
@@ -66,25 +66,22 @@ class Observables:
         dim_dn, dim_up = self.basis.dim_dn, self.basis.dim_up
         M = psi.reshape(dim_dn, dim_up)
         n_sites = self.lattice.n_sites
+        prob = self.prob(psi)
+        n_up = self.occ_up @ prob.sum(axis=0)  # <n_{i,up}>
+        n_dn = self.occ_dn @ prob.sum(axis=1)  # <n_{i,dn}>
         corr_sx_mat = np.zeros((n_sites, n_sites), dtype=float)
 
         for i in range(n_sites):
             for j in range(n_sites):
                 # <S+_i S-_j> = <c^\dagger_{i,up} c_{i,dn} c^\dagger_{j,dn} c_{j,up}>
-                up_plus = self.hopping_op(self.basis.up.states, i, j)
-                dn_plus_dag = self.hopping_op(self.basis.dn.states, j, i)
-                new_M_plus = dn_plus_dag.conj().T @ M @ up_plus
-                term1 = np.vdot(M, new_M_plus).real
+                #             = delta_ij <n_{i,up}> - <(c^\dagger_{i,up} c_{j,up}) (c^\dagger_{j,dn} c_{i,dn})>
+                up_op = self.hopping_op(self.basis.up.states, i, j)
+                dn_op = self.hopping_op(self.basis.dn.states, j, i)
+                corr_sx_mat[i, j] = -np.vdot(M, dn_op @ M @ up_op.T).real
+            corr_sx_mat[i, i] += (n_up[i] + n_dn[i]) / 2  # delta_ij term, averaged with <S-_i S+_i>
 
-                # <S-_i S+_j> = <c^\dagger_{i,dn} c_{i,up} c^\dagger_{j,up} c_{j,dn}>
-                dn_minus = self.hopping_op(self.basis.dn.states, i, j)
-                up_minus = self.hopping_op(self.basis.up.states, j, i)
-                new_M_minus = dn_minus @ M @ up_minus
-                term2 = np.vdot(M, new_M_minus).real
-
-                corr_sx_mat[i, j] = (term1 + term2)
-
-        return corr_sx_mat / (4 * n_sites)
+        # <Sx_i Sx_j> = (<S+_i S-_j> + <S-_i S+_j>) / 4 = Re <S+_i S-_j> / 2
+        return corr_sx_mat / (2 * n_sites)
 
     def S_q0(self, corr):
         return np.sum(corr)

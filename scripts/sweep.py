@@ -36,8 +36,8 @@ cfg.tol = 0
 cfg.n_flux = 10
 
 # Disorder
-cfg.n_samples = 1
-cfg.w0 = 0.0
+cfg.n_samples = 5
+cfg.w0 = 12.0
 cfg.w1 = 0.0
 cfg.w2 = 0.0
 
@@ -45,8 +45,8 @@ DATA_DIR = Path('./data/ed_diagrams')
 RESULTS_FILE = 'sweep.h5'
 REGISTRY_FILE = 'configs.json'
 
-SWEEP_VARS = ('U', 'delta')
-FIXED_VARS = {'V': 0.0}
+SWEEP_VARS = ('U', 'V')
+FIXED_VARS = {'delta': 0.0}
 
 RANGES = {'delta': np.linspace(0, 4, 16),
           'U': np.linspace(0, 12.5, 16),
@@ -54,7 +54,7 @@ RANGES = {'delta': np.linspace(0, 4, 16),
 
 # Possible observables: 'E_gs', 'gap', 'corr_ch', 'corr_sz', 'corr_sx', 'chern'
 OBS = ['E_gs', 'gap', 'corr_ch', 'corr_sz', 'corr_sx']
-REPLACE_OBS = True
+REPLACE_OBS = False
 
 
 def disorder_config(lattice):
