@@ -1,29 +1,32 @@
 import numpy as np
+from dataclasses import dataclass, field
+from typing import List, Any
 
-DTYPE = np.complex128
+@dataclass
+class Config:
 
-# Lattice
-CELL = 'honeycomb'
-CLUSTER = 'A'
-N_MAX = np.array([2, 3])
+    # Lattice
+    cell: str = 'honeycomb'
+    cluster: str = 'A'
+    n_max: List[int] = field(default_factory=lambda: [2, 3])
 
-# Occupation
-FILLING = 0.5   # half filling is 0.5
-SZ = 0.0
+    # Occupation
+    filling: float = 0.5
+    Sz: float = 0.0
 
-# Hoppings and twisted boundary flux
-T1 = 1.0
-T2 = 0.2
-PHI = 0.5 # in units of pi
+    # Hoppings and twisted boundary flux
+    t1: float = 1.0
+    t2: float = 0.2
+    phi: float = 0.5
 
-# ED solver parameters
-TOL = 0
+    # ED solver parameters
+    tol: float = 0
 
-# Flux grid per dimension
-N_FLUX = 4
+    # Flux grid per dimension
+    n_flux: int = 10
 
-# Disorder parameters
-N_SAMPLES = 1
-W0 = 0.0
-W1 = 0.0
-W2 = 0.0
+    # Disorder parameters
+    n_samples: int = 1
+    w0: float = 0.0
+    w1: float = 0.0
+    w2: float = 0.0

@@ -8,36 +8,53 @@ import h5py
 from mpi4py import MPI
 import numpy as np
 
-from ed import config
+# Import the Config class and the ED components
+from ed.config import Config
 from ed.lattice import Lattice
+from ed.basis import SpinfulBasis
 from ed.hamiltonian import Hamiltonian
 from ed.ed_solver import EDSolver
 from ed.observables import Observables
+
+cfg = Config()
+
+# Lattice
+cfg.cell = 'honeycomb'
+cfg.cluster = 'A'
+cfg.n_max = [1, 2]
+
+# Electron filling and total spin
+cfg.filling = 0.5
+cfg.Sz = 0.0
+
+# Physical parameters
+cfg.t1 = 1.0
+cfg.t2 = 0.2
+cfg.phi = 0.5
+
+# ED tolerance and Chern number flux grid
+cfg.tol = 0
+cfg.n_flux = 10
+
+# Disorder
+cfg.n_samples = 1
+cfg.w0 = 0.0
+cfg.w1 = 0.0
+cfg.w2 = 0.0
 
 DATA_DIR = Path('./data/ed_diagrams')
 RESULTS_FILE = 'sweep.h5'
 REGISTRY_FILE = 'configs.json'
 
-CONFIG = {'CELL': 'honeycomb', 'CLUSTER': 'A', 'N_MAX': [1, 2], # Lattice
-          'FILLING': 0.5, 'SZ': 0.0, # Electron filling and total spin
-          'T1': 1.0, 'T2': 0.2, 'PHI': 0.5, # Physical parameters
-          'TOL': 0, 'N_FLUX': 10, # ED tolerance and Chern number flux grid
-          'N_SAMPLES': 1, 'W0': 0.0, 'W1': 0.0, 'W2': 0.0} # Disorder
-
-for key, value in CONFIG.items():
-    setattr(config, key, value)
-
 SWEEP_VARS = ('U', 'V')
 FIXED_VARS = {'delta': 0.0}
 
-RANGES = {
-    'delta': np.linspace(0, 4, 14),
-    'U': np.linspace(0, 12.5, 14),
-    'V': np.linspace(0, 4, 14)
-}
+RANGES = {'delta': np.linspace(0, 4, 14),
+          'U': np.linspace(0, 12.5, 14),
+          'V': np.linspace(0, 4, 14)}
 
-# Possible observables: 'E_gs', 'gap', 'cdw', 'sdw', 'resta', 'chern'
-OBS = ['E_gs', 'gap', 'cdw', 'sdw']
+# Possible observables: 'E_gs', 'gap', 'cdw', 'sdw', 'chern'
+OBS = ['E_gs', 'gap', 'corr_charge', 'corr_spin']
 REPLACE_OBS = False
 
 
@@ -45,14 +62,14 @@ def disorder_config(lattice):
     site_dis_list = []
     bond_dis_list = []
     
-    for _ in range(config.N_SAMPLES):
-        site_dis_list.append((np.random.rand(lattice.n_sites) - 0.5) * config.W0)
+    for _ in range(cfg.n_samples):
+        site_dis_list.append((np.random.rand(lattice.n_sites) - 0.5) * cfg.w0)
         sample_bonds = {
-            (i, j): (np.random.rand() - 0.5) * config.W1 
+            (i, j): (np.random.rand() - 0.5) * cfg.w1 
             for i, j, _ in lattice.bonds[1]
         }
         sample_bonds.update({
-            (i, j): (np.random.rand() - 0.5) * config.W2 
+            (i, j): (np.random.rand() - 0.5) * cfg.w2 
             for i, j, _ in lattice.bonds[2]
         })
         bond_dis_list.append(sample_bonds)
@@ -72,8 +89,8 @@ def sweep(points, lattice, solver, observables, rank, v0=None):
         site_dis_list, bond_dis_list = disorder_config(lattice)
         sample_data = {obs_key: [] for obs_key in OBS}
 
-        for s in range(config.N_SAMPLES):
-            res = solver.ground_state(delta, U, V, config.T1, config.T2, config.PHI, gap=calc_gap, v0=v0,
+        for s in range(cfg.n_samples):
+            res = solver.ground_state(delta, U, V, gap=calc_gap, v0=v0, 
                                       site_dis=site_dis_list[s], bond_dis=bond_dis_list[s])
             E, psi = res[0], res[1]
             v0 = psi
@@ -83,11 +100,11 @@ def sweep(points, lattice, solver, observables, rank, v0=None):
             if 'gap' in OBS:
                 sample_data['gap'].append(res[2])
             if 'corr_charge' in OBS:
-                sample_data['cdw'].append(observables.corr_charge(psi))
+                sample_data['corr_charge'].append(observables.corr_charge(psi))
             if 'corr_spin' in OBS:
-                sample_data['sdw'].append(observables.corr_spin(psi))
+                sample_data['corr_spin'].append(observables.corr_spin(psi))
             if 'chern' in OBS:
-                chern, _ = observables.chern_number(delta, U, V, grid=config.N_FLUX, v0=v0,
+                chern, _ = observables.chern_number(delta, U, V, grid=cfg.n_flux, v0=v0,
                                                     site_dis=site_dis_list[s], bond_dis=bond_dis_list[s])
                 sample_data['chern'].append(chern)
 
@@ -101,11 +118,12 @@ def sweep(points, lattice, solver, observables, rank, v0=None):
 
 
 def get_current_config():
-    return {'CELL': config.CELL, 'CLUSTER': config.CLUSTER, 'N_MAX': config.N_MAX,
-            'FILLING': config.FILLING, 'SZ': config.SZ,
-            'T1': config.T1, 'T2': config.T2, 'PHI': config.PHI,
-            'TOL': config.TOL, 'N_FLUX': config.N_FLUX,
-            'N_SAMPLES': config.N_SAMPLES, 'W0': config.W0, 'W1': config.W1, 'W2': config.W2}
+    # Maps uppercase keys (for metadata storage) to lowercase attributes in the config object
+    return {'CELL': cfg.cell, 'CLUSTER': cfg.cluster, 'N_MAX': cfg.n_max,
+            'FILLING': cfg.filling, 'SZ': cfg.Sz,
+            'T1': cfg.t1, 'T2': cfg.t2, 'PHI': cfg.phi,
+            'TOL': cfg.tol, 'N_FLUX': cfg.n_flux,
+            'N_SAMPLES': cfg.n_samples, 'W0': cfg.w0, 'W1': cfg.w1, 'W2': cfg.w2}
 
 
 def get_config_hash(config_dict):
@@ -148,7 +166,6 @@ def save(results, path):
                 grp = f[grp_name]
                 for key in OBS:
                     grp.attrs.pop(key, None)
-                    grp.attrs.pop(f"{key}_std", None)
 
         for (delta, U, V), data in results.items():
             grp_name = f"delta_{delta:.4f}_U_{U:.4f}_V_{V:.4f}"
@@ -177,23 +194,30 @@ def main():
     if rank == 0:
         slurm_job_id = os.environ.get('SLURM_JOB_ID', 'N/A')
         print("="*40)
-        print(f"SLURM_JOB_ID  : {slurm_job_id}")
-        print(f"CONFIG HASH   : {config_hash}")
-        print(f"TARGET FILE   : {RESULTS_FILE.replace('.h5', f'_{config_hash}.h5')}")
-        print("CONFIGURATION :")
-        print(json.dumps(current_config))
+        print(f"SLURM_JOB_ID : {slurm_job_id}")
+        print(f"CONFIG HASH : {config_hash}")
+        print(f"TARGET FILE : {RESULTS_FILE.replace('.h5', f'_{config_hash}.h5')}")
+        print(f"CELL: {cfg.cell}, CLUSTER: {cfg.cluster}, N_MAX: {cfg.n_max}, # Lattice")
+        print(f"FILLING: {cfg.filling:.3g}, SZ: {cfg.Sz:.3g}, # Electron filling and total spin")
+        print(f"T1: {cfg.t1:.3g}, T2: {cfg.t2:.3g}, PHI: {cfg.phi:.3g}, # Physical parameters")
+        print(f"TOL: {cfg.tol}, N_FLUX: {cfg.n_flux}, # ED tolerance and Chern number flux grid")
+        print(f"N_SAMPLES: {cfg.n_samples}, W0: {cfg.w0:.3g}, W1: {cfg.w1:.3g}, W2: {cfg.w2:.3g} # Disorder")
         print("FIXED PARAMS : ", FIXED_VARS)
         print("VARYING PARAMS : ", {var : (float(RANGES[var][0]), float(RANGES[var][-1]), len(RANGES[var])) for var in SWEEP_VARS})
         print("EVALUATING OBSERVABLES : ", OBS)
-        print("="*40, flush=True)
         DATA_DIR.mkdir(exist_ok=True)
 
-    comm.Barrier()
+    lattice = Lattice(cfg)
+    if rank == 0:
+        print(f'N_SITES : {lattice.n_sites}, {lattice.positions}')
+        print("="*40, flush=True)
+        
+    basis = SpinfulBasis(cfg, lattice)
+    hamiltonian = Hamiltonian(cfg, basis, lattice)
+    solver = EDSolver(cfg, hamiltonian)
+    observables = Observables(cfg, basis, lattice, solver)
 
-    lattice = Lattice()
-    print(f'Lattice built, Nsites = {lattice.n_sites}')
-    solver = EDSolver(Hamiltonian())
-    observables = Observables(solver)
+    comm.Barrier()
 
     inner_var = SWEEP_VARS[0]
     outer_vars = list(SWEEP_VARS[1:])

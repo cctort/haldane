@@ -20,6 +20,7 @@ COLOR_LIST = sns.color_palette('colorblind') + sns.color_palette("Set2") + sns.c
 
 plt.rcParams.update({
     "text.usetex": True,
+    "text.latex.preamble": r"\usepackage{amsmath}\usepackage{amssymb}",
     "font.family": "serif",
     "font.serif": ["Computer Modern"],
     "axes.labelsize": 18,
@@ -30,21 +31,33 @@ plt.rcParams.update({
 })
 
 
+# Observables stored in the HDF5 files (keys are lower-case after loading).
+# 'inv_gap' is a derived quantity: 1/gap, computed per realization before averaging.
+BASE_LABELS = {
+    "u": r"$U/t$", "v": r"$V/t$", "delta": r"$\Delta/t$",
+    "e_gs": r"$E_{\mathrm{gs}}/t$",
+    "gap": r"$\epsilon_{\mathrm{gap}}/t$",
+    "inv_gap": r"$1/\epsilon_{\mathrm{gap}}$",
+    "chern": r"$\mathcal{C}$",
+    "ss_q0": r"$\mathcal{S}_{\mathrm{s}}(\mathbf{q}=0)$",
+    "sc_q0": r"$\mathcal{S}_{\mathrm{c}}(\mathbf{q}=0)$",
+    "ss_qpi": r"$\mathcal{S}_{\mathrm{s}}(\mathbf{q}=\pi)$",
+    "sc_qpi": r"$\mathcal{S}_{\mathrm{c}}(\mathbf{q}=\pi)$",
+}
+
+# derived key -> (stored key, transform applied to the raw values)
+DERIVED = {
+    "inv_gap": ("gap", lambda a: np.where(np.isclose(a, 0), np.nan, 1.0 / np.where(np.isclose(a, 0), 1.0, a))),
+}
+
+
 def get_auto_label(key, modifier=None):
     if key is None: return ""
-    base_labels = {
-        "u": r"$U/t$", "v": r"$V/t$", "delta": r"$\Delta/t$",
-        "cdw": r"$\mathcal{S}_{\mathrm{CDW}}$", "sdw": r"$\mathcal{S}_{\mathrm{SDW}}$",
-        "gap": r"$1/\epsilon_{\mathrm{gap}}$", "chern": r"$\mathcal{C}$",
-        "resta": r"$P_{\mathrm{Resta}}$", "E_gs": r"$E_{\mathrm{gs}}/t$",
-    }
+    key = key.lower()
+    inner = BASE_LABELS.get(key, rf"${key}$").strip("$")
 
-    if key in base_labels: return base_labels[key]
-
-    base = key[:-4] if len(key) > 4 else key
-    inner = base_labels.get(base, rf"${base}$").strip("$")
-    if modifier == 'avg' or key == 'chern':
-        return rf'$\mathbb{{E}}[{inner}]$'
+    if modifier in (None, 'avg') or key == 'chern':
+        return BASE_LABELS.get(key, rf"${key}$")
     elif modifier == 'log_avg':
         return rf'$\exp{{\mathbb{{E}}[\ln({inner})]}}$'
     elif modifier == 'std':
@@ -52,7 +65,7 @@ def get_auto_label(key, modifier=None):
     elif modifier == 'rel_std':
         return rf'$\sqrt{{Var[{inner}]}}/\mathbb{{E}}[{inner}]$'
 
-    return rf"${key}$"
+    return BASE_LABELS.get(key, rf"${key}$")
 
 
 def find_matching_file(target_config, data_dir):
@@ -71,6 +84,35 @@ def find_matching_file(target_config, data_dir):
     return None
 
 
+_SIGNS_CACHE = {}
+
+
+def _sublattice_signs(cell, cluster, n_max):
+    """Sublattice signs (+1 A, -1 B) of the cluster the data was computed on."""
+    key = (cell, cluster, tuple(int(n) for n in n_max))
+    if key not in _SIGNS_CACHE:
+        from ed.lattice import Lattice  # lazy import: only needed for structure factors
+        _SIGNS_CACHE[key] = np.asarray(Lattice(cell, cluster, np.array(key[2])).signs, dtype=float)
+    return _SIGNS_CACHE[key]
+
+
+def _structure_factors(p, signs):
+    """
+    Adds Sc_q0, Sc_qpi, Ss_q0, Ss_qpi (stored as sc_q0, ...) to point dict p, computed
+    from the stored correlation matrices C_ij = <O_i O_j>/N:
+        S(q=0)  = sum_ij C_ij
+        S(q=pi) = sum_ij s_i s_j C_ij      (s_i = +-1 sublattice sign, staggered)
+    A matrix of shape (n, n) gives a float; (n_samples, n, n) gives one value per realization.
+    """
+    for corr_key, prefix in (("corr_charge", "sc"), ("corr_spin", "ss")):
+        if corr_key not in p:
+            continue
+        C = np.asarray(p.pop(corr_key), dtype=float)
+        ones = np.ones_like(signs)
+        p[f"{prefix}_q0"] = np.einsum("i,...ij,j->...", ones, C, ones)
+        p[f"{prefix}_qpi"] = np.einsum("i,...ij,j->...", signs, C, signs)
+
+
 def load_data(data_dir, config, fixed_vars=None, x_key=None, xlim=None, y_key=None, ylim=None):
     """Loads and filters point dictionaries from HDF5."""
     file_path = find_matching_file(config, data_dir)
@@ -78,6 +120,13 @@ def load_data(data_dir, config, fixed_vars=None, x_key=None, xlim=None, y_key=No
 
     points = []
     with h5py.File(file_path, "r") as f:
+        signs = None
+        if all(k in f.attrs for k in ("CELL", "CLUSTER", "N_MAX")):
+            try:
+                signs = _sublattice_signs(str(f.attrs["CELL"]), str(f.attrs["CLUSTER"]), f.attrs["N_MAX"])
+            except Exception as e:
+                print(f"warning: could not build lattice, structure factors unavailable ({e})")
+
         for grp in f.values():
             attrs_lower = {k.lower(): v for k, v in grp.attrs.items()}
             if all(k in attrs_lower for k in ("delta", "u", "v")):
@@ -88,6 +137,8 @@ def load_data(data_dir, config, fixed_vars=None, x_key=None, xlim=None, y_key=No
                     if kl not in p:
                         val = grp[k][()]
                         p[kl] = val.item() if isinstance(val, np.ndarray) and val.ndim == 0 else val
+                if signs is not None:
+                    _structure_factors(p, signs)
                 points.append(p)
 
     if fixed_vars:
@@ -121,33 +172,24 @@ def _find_value(p, key):
 
     for c in candidates:
         if c in p: return p[c]
-
-    for k in p:
-        if k.startswith(key) and not k.endswith(("_std", "_err", "_var")):
-            return p[k]
     return None
 
 
 def _get_obs_val(p, key, modifier='avg'):
     key = key.lower()
-    val = _find_value(p, key)
+
+    transform = None
+    if key in DERIVED:
+        raw_key, transform = DERIVED[key]
+        val = _find_value(p, raw_key)
+    else:
+        val = _find_value(p, key)
     if val is None: return None
 
-    if isinstance(val, np.ndarray):
-        if val.ndim == 0: val = val.item()
-        elif val.ndim == 1 and len(val) == 1: val = val[0]
-
-    if not isinstance(val, (list, tuple, np.ndarray)) or np.array(val).ndim == 0:
-        try: fval = float(val)
-        except (ValueError, TypeError): return np.nan
-
-        if modifier in ('std', 'rel_std'): return 0.0
-        if key == 'gap': return 1.0 / fval if not np.isclose(fval, 0) else np.nan
-        return fval
-
-    val_arr = np.array(val, dtype=float).ravel()
-    if key == 'gap':
-        val_arr = np.array([1.0 / v if not np.isclose(v, 0) else np.nan for v in val_arr])
+    # Stored as one float per point, or an array (one entry per disorder realization)
+    val_arr = np.atleast_1d(np.array(val, dtype=float)).ravel()
+    if transform is not None:
+        val_arr = transform(val_arr)
 
     if np.all(np.isnan(val_arr)): return np.nan
     avg = np.nanmean(val_arr)
@@ -155,7 +197,7 @@ def _get_obs_val(p, key, modifier='avg'):
     if modifier == 'avg' or key == 'chern': return avg
     elif modifier == 'log_avg':
         valid_val = val_arr[~np.isnan(val_arr)]
-        return np.exp(np.nanmean(np.log(valid_val))) if np.all(valid_val > 0) else avg
+        return np.exp(np.mean(np.log(valid_val))) if np.all(valid_val > 0) else avg
     elif modifier == 'std': return np.nanstd(val_arr)
     elif modifier == 'rel_std': return np.nanstd(val_arr) / avg if avg and not np.isclose(avg, 0) else np.nan
     return avg
@@ -167,7 +209,7 @@ def _empty_panel(ax, msg="no data"):
     ax.set_yticks([])
 
 
-def plot_diagram(datasets, x_key, y_key, value_key, titles="", filename=None, cmap="hot", xlim=None, ylim=None, modifier='avg'):
+def plot_diagram(datasets, x_key, y_key, value_key, titles="", filename=None, cmap="hot", xlim=None, ylim=None, modifier='avg', log_cbar=False):
     if datasets and isinstance(datasets[0], dict):
         datasets = [datasets]
 
@@ -176,6 +218,8 @@ def plot_diagram(datasets, x_key, y_key, value_key, titles="", filename=None, cm
 
     modifier = [modifier] * n_obs if isinstance(modifier, str) or modifier is None else list(modifier)
     titles = [titles] * n_datasets if isinstance(titles, str) else titles
+    # log_cbar: bool (all observables) or list of bools (one per observable)
+    log_cbar = [bool(log_cbar)] * n_obs if isinstance(log_cbar, (bool, np.bool_)) else [bool(b) for b in log_cbar]
 
     x_lbl, y_lbl = get_auto_label(x_key), get_auto_label(y_key)
     val_lbls = [get_auto_label(k, m) for k, m in zip(value_key, modifier)]
@@ -189,7 +233,7 @@ def plot_diagram(datasets, x_key, y_key, value_key, titles="", filename=None, cm
             valid_pts = []
             for p in pts:
                 val = _get_obs_val(p, v_key, mod)
-                if val is not None and not np.isnan(val) and not (v_key == "gap" and val <= 0):
+                if val is not None and not np.isnan(val) and not (log_cbar[o_idx] and val <= 0):
                     valid_pts.append({**p, v_key: val})
                     obs_vals[o_idx].append(val)
             plot_data[(d_idx, o_idx)] = valid_pts
@@ -205,15 +249,14 @@ def plot_diagram(datasets, x_key, y_key, value_key, titles="", filename=None, cm
         kws = {'cmap': cmap}
         is_integer = np.allclose(vals, np.round(vals), atol=1e-5)
 
-        if is_integer:
+        if log_cbar[o_idx]:
+            kws['norm'] = LogNorm(vmin=vmin, vmax=max(vmax, vmin * (1 + 1e-9)))
+        elif is_integer:
             lo, hi = int(round(vmin)), int(round(vmax))
             if lo == hi: lo, hi = lo - 1, hi + 1
             bounds = np.arange(lo - 0.5, hi + 1.5, 1.0)
             kws['cmap'] = plt.get_cmap("viridis" if cmap == "hot" else cmap, hi - lo + 1)
             kws.update({'norm': BoundaryNorm(bounds, kws['cmap'].N), 'cbar_ticks': list(range(lo, hi + 1)), 'cbar_boundaries': bounds})
-        elif v_key == "gap":
-            vmin = max(vmin, 1e-12) if vmin <= 0 else vmin
-            kws['norm'] = LogNorm(vmin=vmin, vmax=max(vmax, vmin + 1e-12))
         else:
             eps = max(abs(vmin) * 0.01, 1e-12) if np.isclose(vmin, vmax) else 0
             kws.update({'vmin': vmin - eps, 'vmax': vmax + eps})

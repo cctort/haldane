@@ -1,6 +1,6 @@
 import numpy as np
 from collections import defaultdict
-from .config import CLUSTER, CELL, N_MAX
+from .config import Config
 
 def get_latt_sizes(cluster, n_max):
         if cluster == 'A':
@@ -12,8 +12,8 @@ def get_latt_sizes(cluster, n_max):
 
 def get_latt_vecs(cell):
     if cell == 'honeycomb':
-        a1, a2 = np.array([3, 0.0]), np.array([0.5, 0.5*np.sqrt(3)])
-        tau = np.array([[0.0, 0.0], [2, 0.0]])
+        a1, a2 = np.array([3.0, 0.0]), np.array([1.5, np.sqrt(3)/2])
+        tau = np.array([[0.0, 0.0], [2.0, 0.0]])
         tau_sign = np.array([1, -1])
 
     return a1, a2, tau, tau_sign
@@ -22,14 +22,14 @@ class Lattice:
     """Nearest-neighbor (A-B and B-A, t1) and next-nearest-neighbor (A-A and B-B, t2)
     bonds, identified by their length and by the sublattices they connect."""
 
-    def __init__(self, cell=CELL, cluster=CLUSTER, n_max=N_MAX):
+    def __init__(self, cfg: Config):
 
-        self.cell = cell
-        self.cluster = cluster
-        self.n_max = n_max
+        self.cell = cfg.cell
+        self.cluster = cfg.cluster
+        self.n_max = cfg.n_max
 
-        l1, l2 = get_latt_sizes(cluster, n_max)
-        a1, a2, tau, tau_sign = get_latt_vecs(cell)
+        l1, l2 = get_latt_sizes(cfg.cluster, cfg.n_max)
+        a1, a2, tau, tau_sign = get_latt_vecs(cfg.cell)
 
         M_inv = np.linalg.inv(np.array([l1, l2]).T)
 
@@ -96,7 +96,7 @@ class Lattice:
         for i, j, shift, d in bonds:
             degree = sorted_dist.index(d) + 1
             self.bonds[degree].append((i, j, shift))
-            
+
 
     def chirality(self, i, j, shift):
         """Haldane phase sign nu_ij = +-1 for a next-nearest-neighbor bond."""
@@ -106,5 +106,3 @@ class Lattice:
         angle = np.arctan2(dy, dx) # angle of the bond vector measured from the x axis
         
         return self.signs[i] if np.sin(3 * angle) > 0 else -self.signs[i] # changes sign if bond goes counterclockwise around a hexagon
-
-LATTICE = Lattice()

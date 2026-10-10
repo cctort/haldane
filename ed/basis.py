@@ -1,10 +1,8 @@
 import numpy as np
 from itertools import combinations
-from .lattice import LATTICE
-from .config import FILLING, SZ
+from .config import Config
+from .lattice import Lattice
 
-def get_n_electrons(filling=FILLING, n_sites=LATTICE.n_sites):
-    return np.round(2*filling*n_sites)
 
 def build_states(n_electrons, n_sites):
     """
@@ -44,8 +42,8 @@ def build_states(n_electrons, n_sites):
 
 
 class Basis:
-    def __init__(self, n_electrons, n_sites=LATTICE.n_sites):
-        self.states = build_states(n_electrons, n_sites)
+    def __init__(self, n_electrons, lattice: Lattice):
+        self.states = build_states(n_electrons, lattice.n_sites)
         self.dim = len(self.states)
 
     def index(self, state):
@@ -55,16 +53,14 @@ class Basis:
 
 
 class SpinfulBasis:
-    def __init__(self, filling=FILLING, Sz=SZ, n_sites=LATTICE.n_sites):
-        self.n_electrons = np.round(2*filling*n_sites)
-        self.n_up = int(filling*n_sites + Sz)
-        self.n_dn = int(filling*n_sites - Sz)
+    def __init__(self, cfg: Config, lattice: Lattice):
+        self.n_electrons = np.round(2*cfg.filling*lattice.n_sites)
+        self.n_up = int(cfg.filling*lattice.n_sites + cfg.Sz)
+        self.n_dn = int(cfg.filling*lattice.n_sites - cfg.Sz)
         
-        self.up = Basis(self.n_up)
-        # Reuse the same basis object when both sectors are identical (read-only objects)
-        self.dn = self.up if self.n_dn == self.n_up else Basis(self.n_dn)
+        self.up = Basis(self.n_up, lattice)
+        self.dn = self.up if self.n_dn == self.n_up else Basis(self.n_dn, lattice)
+        
         self.dim_up = self.up.dim
         self.dim_dn = self.dn.dim
         self.dim = self.dim_up * self.dim_dn
-
-BASIS = SpinfulBasis()

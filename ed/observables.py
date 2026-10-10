@@ -1,23 +1,27 @@
 import numpy as np
-from .basis import BASIS
-from .lattice import LATTICE
+from .basis import SpinfulBasis
+from .lattice import Lattice
 from .hamiltonian import hop_element, occupation_table
-from .config import N_FLUX
+from .config import Config
+from .ed_solver import EDSolver
 
 
 class Observables:
-    def __init__(self, solver, basis=BASIS, lattice=LATTICE):
+    def __init__(self, cfg: Config, basis: SpinfulBasis, lattice: Lattice, solver: EDSolver):
         self.solver = solver
         self.basis = basis
         self.lattice = lattice
+
         self.occ_up = occupation_table(basis.up.states, lattice.n_sites)
         self.occ_dn = self.occ_up if basis.dn is basis.up else occupation_table(basis.dn.states, lattice.n_sites)
         self.stag_up = lattice.signs @ self.occ_up
         self.stag_dn = lattice.signs @ self.occ_dn
 
+        self.n_flux = cfg.n_flux
+
     def prob(self, psi):
         """|psi|^2 reshaped to (dim_dn, dim_up), normalized."""
-        prob = np.abs(psi.reshape(BASIS.dim_dn, BASIS.dim_up)) ** 2
+        prob = np.abs(psi.reshape(self.basis.dim_dn, self.basis.dim_up)) ** 2
         return prob / prob.sum()
 
     def corr_charge(self, psi):
@@ -31,7 +35,7 @@ class Observables:
         n_dn_n_dn = (self.occ_dn * p_dn) @ self.occ_dn.T
         n_up_n_dn = self.occ_up @ prob.T @ self.occ_dn.T
 
-        return (n_up_n_up - n_up_n_dn - n_up_n_dn.T + n_dn_n_dn) / LATTICE.n_sites
+        return (n_up_n_up - n_up_n_dn - n_up_n_dn.T + n_dn_n_dn) / self.lattice.n_sites
 
     def corr_spin(self, psi):
         """ Spatial spin correlation elements <Sz_i Sz_j> / N."""
@@ -44,11 +48,18 @@ class Observables:
         n_dn_n_dn = (self.occ_dn * p_dn) @ self.occ_dn.T
         n_up_n_dn = self.occ_up @ prob.T @ self.occ_dn.T
 
-        return (n_up_n_up - n_up_n_dn - n_up_n_dn.T + n_dn_n_dn) / (4 * LATTICE.n_sites)
+        return (n_up_n_up - n_up_n_dn - n_up_n_dn.T + n_dn_n_dn) / (4 * self.lattice.n_sites)
+
+    def S_q0(self, corr):
+        return np.sum(corr)
 
     def stagger(self, corr_mat):
         stagg_mat = self.lattice.signs[:, None] * self.lattice.signs[:, None]
         return stagg_mat * corr_mat
+
+    def S_qpi(self, corr):
+        stagg_corr = self.stagger(corr)
+        return np.sum(stagg_corr)
 
     def density_matrix(self, psi):
         """
@@ -77,13 +88,13 @@ class Observables:
 
         return rho_up, rho_dn
 
-    def chern_number(self, delta, U, V, n_flux=N_FLUX, site_dis=None, bond_dis=None):
+    def chern_number(self, delta, U, V, site_dis=None, bond_dis=None):
         """
         Total (up+down) Chern number via Fukui-Hatsugai-Suzuki flux
         integration.
         """
-        angles = np.linspace(0, 2 * np.pi, n_flux, endpoint=False)
-        psi = [[None] * n_flux for _ in range(n_flux)]
+        angles = np.linspace(0, 2 * np.pi, self.n_flux, endpoint=False)
+        psi = [[None] * self.n_flux for _ in range(self.n_flux)]
 
         v0 = None
         for ix, fx in enumerate(angles):
@@ -97,10 +108,10 @@ class Observables:
             return braket / abs(braket)
 
         curvature = 0.0
-        for ix in range(n_flux):
-            ix2 = (ix + 1) % n_flux
-            for iy in range(n_flux):
-                iy2 = (iy + 1) % n_flux
+        for ix in range(self.n_flux):
+            ix2 = (ix + 1) % self.n_flux
+            for iy in range(self.n_flux):
+                iy2 = (iy + 1) % self.n_flux
                 plaquette = (
                     phase(psi[ix][iy], psi[ix2][iy])
                     * phase(psi[ix2][iy], psi[ix2][iy2])
