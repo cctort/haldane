@@ -30,22 +30,23 @@ plt.rcParams.update({
     "legend.fontsize": 15,
 })
 
-
-# Observables stored in the HDF5 files (keys are lower-case after loading).
-# 'inv_gap' is a derived quantity: 1/gap, computed per realization before averaging.
 BASE_LABELS = {
     "u": r"$U/t$", "v": r"$V/t$", "delta": r"$\Delta/t$",
     "e_gs": r"$E_{\mathrm{gs}}/t$",
     "gap": r"$\epsilon_{\mathrm{gap}}/t$",
     "inv_gap": r"$1/\epsilon_{\mathrm{gap}}$",
     "chern": r"$\mathcal{C}$",
-    "ss_q0": r"$\mathcal{S}_{\mathrm{s}}(\mathbf{q}=0)$",
+    "ss_z_q0": r"$\mathcal{S}_{\mathrm{s}}^z(\mathbf{q}=0)$",
+    "ss_z_qpi": r"$\mathcal{S}_{\mathrm{s}}^z(\mathbf{q}=\pi)$",
+    "ss_x_q0": r"$\mathcal{S}_{\mathrm{s}}^x(\mathbf{q}=0)$",
+    "ss_x_qpi": r"$\mathcal{S}_{\mathrm{s}}^x(\mathbf{q}=\pi)$",
     "sc_q0": r"$\mathcal{S}_{\mathrm{c}}(\mathbf{q}=0)$",
-    "ss_qpi": r"$\mathcal{S}_{\mathrm{s}}(\mathbf{q}=\pi)$",
     "sc_qpi": r"$\mathcal{S}_{\mathrm{c}}(\mathbf{q}=\pi)$",
+    "chi_z_sg": r"$\chi_{\mathrm{SG}}^z$",
+    "chi_x_sg": r"$\chi_{\mathrm{SG}}^x$",
+    "chi_z_cg": r"$\chi_{\mathrm{CG}}$",
 }
 
-# derived key -> (stored key, transform applied to the raw values)
 DERIVED = {
     "inv_gap": ("gap", lambda a: np.where(np.isclose(a, 0), np.nan, 1.0 / np.where(np.isclose(a, 0), 1.0, a))),
 }
@@ -88,33 +89,42 @@ _SIGNS_CACHE = {}
 
 
 def _sublattice_signs(cell, cluster, n_max):
-    """Sublattice signs (+1 A, -1 B) of the cluster the data was computed on."""
     key = (cell, cluster, tuple(int(n) for n in n_max))
     if key not in _SIGNS_CACHE:
-        from ed.lattice import Lattice  # lazy import: only needed for structure factors
+        from ed.lattice import Lattice
         _SIGNS_CACHE[key] = np.asarray(Lattice(cell, cluster, np.array(key[2])).signs, dtype=float)
     return _SIGNS_CACHE[key]
 
 
 def _structure_factors(p, signs):
-    """
-    Adds Sc_q0, Sc_qpi, Ss_q0, Ss_qpi (stored as sc_q0, ...) to point dict p, computed
-    from the stored correlation matrices C_ij = <O_i O_j>/N:
-        S(q=0)  = sum_ij C_ij
-        S(q=pi) = sum_ij s_i s_j C_ij      (s_i = +-1 sublattice sign, staggered)
-    A matrix of shape (n, n) gives a float; (n_samples, n, n) gives one value per realization.
-    """
-    for corr_key, prefix in (("corr_charge", "sc"), ("corr_spin", "ss")):
-        if corr_key not in p:
-            continue
-        C = np.asarray(p.pop(corr_key), dtype=float)
-        ones = np.ones_like(signs)
-        p[f"{prefix}_q0"] = np.einsum("i,...ij,j->...", ones, C, ones)
-        p[f"{prefix}_qpi"] = np.einsum("i,...ij,j->...", signs, C, signs)
+    ones = np.ones_like(signs)
+    n_sites = len(signs)
+
+    if "corr_sz" in p:
+        C_sz = np.asarray(p["corr_sz"], dtype=float)
+        p["ss_z_q0"] = np.einsum("i,...ij,j->...", ones, C_sz, ones)
+        p["ss_z_qpi"] = np.einsum("i,...ij,j->...", signs, C_sz, signs)
+        p["chi_z_sg"] = np.sum((C_sz * n_sites)**2, axis=(-2, -1)) / n_sites
+
+    if "corr_sx" in p:
+        C_sx = np.asarray(p["corr_sx"], dtype=float)
+        p["ss_x_q0"] = np.einsum("i,...ij,j->...", ones, C_sx, ones)
+        p["ss_x_qpi"] = np.einsum("i,...ij,j->...", signs, C_sx, signs)
+        p["chi_x_sg"] = np.sum((C_sx * n_sites)**2, axis=(-2, -1)) / n_sites
+
+    if "corr_charge" in p:
+        C_raw = np.asarray(p["corr_charge"], dtype=float)
+        p["sc_q0"] = np.einsum("i,...ij,j->...", ones, C_raw, ones)
+        p["sc_qpi"] = np.einsum("i,...ij,j->...", signs, C_raw, signs)
+        
+        filling = p.get("filling", 0.5)
+        n_bar = 2.0 * filling
+        C_conn = C_raw - (n_bar**2) / n_sites
+        p["corr_charge_connected"] = C_conn
+        p["chi_z_cg"] = np.sum((C_conn * n_sites)**2, axis=(-2, -1)) / n_sites
 
 
 def load_data(data_dir, config, fixed_vars=None, x_key=None, xlim=None, y_key=None, ylim=None):
-    """Loads and filters point dictionaries from HDF5."""
     file_path = find_matching_file(config, data_dir)
     if not file_path: return []
 
@@ -186,7 +196,6 @@ def _get_obs_val(p, key, modifier='avg'):
         val = _find_value(p, key)
     if val is None: return None
 
-    # Stored as one float per point, or an array (one entry per disorder realization)
     val_arr = np.atleast_1d(np.array(val, dtype=float)).ravel()
     if transform is not None:
         val_arr = transform(val_arr)
@@ -218,7 +227,6 @@ def plot_diagram(datasets, x_key, y_key, value_key, titles="", filename=None, cm
 
     modifier = [modifier] * n_obs if isinstance(modifier, str) or modifier is None else list(modifier)
     titles = [titles] * n_datasets if isinstance(titles, str) else titles
-    # log_cbar: bool (all observables) or list of bools (one per observable)
     log_cbar = [bool(log_cbar)] * n_obs if isinstance(log_cbar, (bool, np.bool_)) else [bool(b) for b in log_cbar]
 
     x_lbl, y_lbl = get_auto_label(x_key), get_auto_label(y_key)
@@ -313,7 +321,6 @@ def plot_diagram(datasets, x_key, y_key, value_key, titles="", filename=None, cm
 
 
 def plot_1d_cut(datasets, x_key, value_key, title="", filename=None, colors=None, labels=None, xlim=None, relative_to=None, relative_std=False, modifier='avg'):
-    """Plots 1D cuts. 'datasets' is either a list of point dicts or a list of such lists."""
     if datasets and isinstance(datasets[0], dict):
         datasets = [datasets]
 

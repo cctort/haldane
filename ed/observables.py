@@ -1,4 +1,5 @@
 import numpy as np
+from scipy import sparse
 from .basis import SpinfulBasis
 from .lattice import Lattice
 from .hamiltonian import hop_element, occupation_table
@@ -24,7 +25,7 @@ class Observables:
         prob = np.abs(psi.reshape(self.basis.dim_dn, self.basis.dim_up)) ** 2
         return prob / prob.sum()
 
-    def corr_charge(self, psi):
+    def corr_ch(self, psi):
         """ Spatial charge correlation elements <n_i n_j> / N."""
         prob = self.prob(psi)  # shape: (dim_dn, dim_up)
 
@@ -35,10 +36,10 @@ class Observables:
         n_dn_n_dn = (self.occ_dn * p_dn) @ self.occ_dn.T
         n_up_n_dn = self.occ_up @ prob.T @ self.occ_dn.T
 
-        return (n_up_n_up - n_up_n_dn - n_up_n_dn.T + n_dn_n_dn) / self.lattice.n_sites
+        return (n_up_n_up + n_up_n_dn + n_up_n_dn.T + n_dn_n_dn) / self.lattice.n_sites
 
-    def corr_spin(self, psi):
-        """ Spatial spin correlation elements <Sz_i Sz_j> / N."""
+    def corr_sz(self, psi):
+        """ Spatial spin correlation elements <Sz_i Sz_j> / N. """
         prob = self.prob(psi)  # shape: (dim_dn, dim_up)
 
         p_up = prob.sum(axis=0)  # shape: (dim_up,)
@@ -49,12 +50,47 @@ class Observables:
         n_up_n_dn = self.occ_up @ prob.T @ self.occ_dn.T
 
         return (n_up_n_up - n_up_n_dn - n_up_n_dn.T + n_dn_n_dn) / (4 * self.lattice.n_sites)
+    
+    def hopping_op(self, states, i, j):
+        """Build sparse operator matrix for c^\dagger_i c_j using hop_element."""
+        dim = len(states)
+        rows, cols, vals = [], [], []
+        for bra, ket, sign in hop_element(states, i, j):
+            rows.append(bra)
+            cols.append(ket)
+            vals.append(sign)
+        return sparse.coo_matrix((vals, (rows, cols)), shape=(dim, dim), dtype=float).tocsr()
+
+    def corr_sx(self, psi):
+        """Spatial transverse spin correlation elements <Sx_i Sx_j> / N."""
+        dim_dn, dim_up = self.basis.dim_dn, self.basis.dim_up
+        M = psi.reshape(dim_dn, dim_up)
+        n_sites = self.lattice.n_sites
+        corr_sx_mat = np.zeros((n_sites, n_sites), dtype=float)
+
+        for i in range(n_sites):
+            for j in range(n_sites):
+                # <S+_i S-_j> = <c^\dagger_{i,up} c_{i,dn} c^\dagger_{j,dn} c_{j,up}>
+                up_plus = self.hopping_op(self.basis.up.states, i, j)
+                dn_plus_dag = self.hopping_op(self.basis.dn.states, j, i)
+                new_M_plus = dn_plus_dag.conj().T @ M @ up_plus
+                term1 = np.vdot(M, new_M_plus).real
+
+                # <S-_i S+_j> = <c^\dagger_{i,dn} c_{i,up} c^\dagger_{j,up} c_{j,dn}>
+                dn_minus = self.hopping_op(self.basis.dn.states, i, j)
+                up_minus = self.hopping_op(self.basis.up.states, j, i)
+                new_M_minus = dn_minus @ M @ up_minus
+                term2 = np.vdot(M, new_M_minus).real
+
+                corr_sx_mat[i, j] = (term1 + term2)
+
+        return corr_sx_mat / (4 * n_sites)
 
     def S_q0(self, corr):
         return np.sum(corr)
 
     def stagger(self, corr_mat):
-        stagg_mat = self.lattice.signs[:, None] * self.lattice.signs[:, None]
+        stagg_mat = self.lattice.signs[:, None] * self.lattice.signs[None, :]
         return stagg_mat * corr_mat
 
     def S_qpi(self, corr):

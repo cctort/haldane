@@ -8,7 +8,6 @@ import h5py
 from mpi4py import MPI
 import numpy as np
 
-# Import the Config class and the ED components
 from ed.config import Config
 from ed.lattice import Lattice
 from ed.basis import SpinfulBasis
@@ -21,7 +20,7 @@ cfg = Config()
 # Lattice
 cfg.cell = 'honeycomb'
 cfg.cluster = 'A'
-cfg.n_max = [1, 2]
+cfg.n_max = [2, 3]
 
 # Electron filling and total spin
 cfg.filling = 0.5
@@ -46,16 +45,16 @@ DATA_DIR = Path('./data/ed_diagrams')
 RESULTS_FILE = 'sweep.h5'
 REGISTRY_FILE = 'configs.json'
 
-SWEEP_VARS = ('U', 'V')
-FIXED_VARS = {'delta': 0.0}
+SWEEP_VARS = ('U', 'delta')
+FIXED_VARS = {'V': 0.0}
 
-RANGES = {'delta': np.linspace(0, 4, 14),
-          'U': np.linspace(0, 12.5, 14),
-          'V': np.linspace(0, 4, 14)}
+RANGES = {'delta': np.linspace(0, 4, 16),
+          'U': np.linspace(0, 12.5, 16),
+          'V': np.linspace(0, 4, 16)}
 
-# Possible observables: 'E_gs', 'gap', 'cdw', 'sdw', 'chern'
-OBS = ['E_gs', 'gap', 'corr_charge', 'corr_spin']
-REPLACE_OBS = False
+# Possible observables: 'E_gs', 'gap', 'corr_ch', 'corr_sz', 'corr_sx', 'chern'
+OBS = ['E_gs', 'gap', 'corr_ch', 'corr_sz', 'corr_sx']
+REPLACE_OBS = True
 
 
 def disorder_config(lattice):
@@ -99,15 +98,18 @@ def sweep(points, lattice, solver, observables, rank, v0=None):
                 sample_data['E_gs'].append(E)
             if 'gap' in OBS:
                 sample_data['gap'].append(res[2])
-            if 'corr_charge' in OBS:
-                sample_data['corr_charge'].append(observables.corr_charge(psi))
-            if 'corr_spin' in OBS:
-                sample_data['corr_spin'].append(observables.corr_spin(psi))
+            if 'corr_ch' in OBS:
+                sample_data['corr_ch'].append(observables.corr_ch(psi))
+            if 'corr_sz' in OBS:
+                sample_data['corr_sz'].append(observables.corr_sz(psi))
+            if 'corr_sx' in OBS:
+                sample_data['corr_sx'].append(observables.corr_sx(psi))
             if 'chern' in OBS:
-                chern, _ = observables.chern_number(delta, U, V, grid=cfg.n_flux, v0=v0,
-                                                    site_dis=site_dis_list[s], bond_dis=bond_dis_list[s])
+                chern = observables.chern_number(delta, U, V, site_dis=site_dis_list[s], bond_dis=bond_dis_list[s])
                 sample_data['chern'].append(chern)
 
+        if cfg.n_samples == 1:  # no list for a single realization
+            sample_data = {k: v[0] for k, v in sample_data.items()}
         results[(delta, U, V)] = sample_data
 
         d_vals = {'delta': delta, 'U': U, 'V': V}
@@ -197,11 +199,11 @@ def main():
         print(f"SLURM_JOB_ID : {slurm_job_id}")
         print(f"CONFIG HASH : {config_hash}")
         print(f"TARGET FILE : {RESULTS_FILE.replace('.h5', f'_{config_hash}.h5')}")
-        print(f"CELL: {cfg.cell}, CLUSTER: {cfg.cluster}, N_MAX: {cfg.n_max}, # Lattice")
-        print(f"FILLING: {cfg.filling:.3g}, SZ: {cfg.Sz:.3g}, # Electron filling and total spin")
-        print(f"T1: {cfg.t1:.3g}, T2: {cfg.t2:.3g}, PHI: {cfg.phi:.3g}, # Physical parameters")
-        print(f"TOL: {cfg.tol}, N_FLUX: {cfg.n_flux}, # ED tolerance and Chern number flux grid")
-        print(f"N_SAMPLES: {cfg.n_samples}, W0: {cfg.w0:.3g}, W1: {cfg.w1:.3g}, W2: {cfg.w2:.3g} # Disorder")
+        print(f"CELL: {cfg.cell}, CLUSTER: {cfg.cluster}, N_MAX: {cfg.n_max},")
+        print(f"FILLING: {cfg.filling:.3g}, SZ: {cfg.Sz:.3g},")
+        print(f"T1: {cfg.t1:.3g}, T2: {cfg.t2:.3g}, PHI: {cfg.phi:.3g},")
+        print(f"TOL: {cfg.tol}, N_FLUX: {cfg.n_flux},")
+        print(f"N_SAMPLES: {cfg.n_samples}, W0: {cfg.w0:.3g}, W1: {cfg.w1:.3g}, W2: {cfg.w2:.3g}")
         print("FIXED PARAMS : ", FIXED_VARS)
         print("VARYING PARAMS : ", {var : (float(RANGES[var][0]), float(RANGES[var][-1]), len(RANGES[var])) for var in SWEEP_VARS})
         print("EVALUATING OBSERVABLES : ", OBS)
@@ -209,7 +211,7 @@ def main():
 
     lattice = Lattice(cfg)
     if rank == 0:
-        print(f'N_SITES : {lattice.n_sites}, {lattice.positions}')
+        print(f'N_SITES : {lattice.n_sites}')
         print("="*40, flush=True)
         
     basis = SpinfulBasis(cfg, lattice)
