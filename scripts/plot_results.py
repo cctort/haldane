@@ -12,6 +12,9 @@ import seaborn as sns
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from ed.config import Config
+from ed.lattice import Lattice, get_latt_sizes, get_latt_vecs
+
 REGISTRY_FILE = "configs.json"
 IMAGES_DIR = ROOT / "images"
 IMAGES_DIR.mkdir(exist_ok=True)
@@ -34,23 +37,25 @@ BASE_LABELS = {
     "u": r"$U/t$", "v": r"$V/t$", "delta": r"$\Delta/t$",
     "e_gs": r"$E_{\mathrm{gs}}/t$",
     "gap": r"$\epsilon_{\mathrm{gap}}/t$",
-    "inv_gap": r"$1/\epsilon_{\mathrm{gap}}$",
+    "inv_gap": r"$(\epsilon_{\mathrm{gap}}/t)^{-1}$",
     "chern": r"$\mathcal{C}$",
-    "ss_z_q0": r"$\mathcal{S}_{\mathrm{s}}^z(\mathbf{q}=0)$",
-    "ss_z_qpi": r"$\mathcal{S}_{\mathrm{s}}^z(\mathbf{q}=\pi)$",
-    "ss_x_q0": r"$\mathcal{S}_{\mathrm{s}}^x(\mathbf{q}=0)$",
-    "ss_x_qpi": r"$\mathcal{S}_{\mathrm{s}}^x(\mathbf{q}=\pi)$",
-    "sc_q0": r"$\mathcal{S}_{\mathrm{c}}(\mathbf{q}=0)$",
-    "sc_qpi": r"$\mathcal{S}_{\mathrm{c}}(\mathbf{q}=\pi)$",
+    "ss_z_q0": r"$\mathcal{S}^z(0,0)$",
+    "ss_z_qpi": r"$\mathcal{S}^z(\pi,\pi)$",
+    "ss_x_q0": r"$\mathcal{S}^x(0,0)$",
+    "ss_x_qpi": r"$\mathcal{S}^x(\pi,\pi)$",
+    "sc_q0": r"$\mathcal{N}(0,0)$",
+    "sc_qpi": r"$\mathcal{N}(\pi,\pi)$",
     "chi_z_sg": r"$\chi_{\mathrm{SG}}^z$",
     "chi_x_sg": r"$\chi_{\mathrm{SG}}^x$",
-    "chi_z_cg": r"$\chi_{\mathrm{CG}}$",
+    "chi_cg": r"$\chi_{\mathrm{CG}}$",
+    "chi_z_sg_ratio": r"$\chi_{\mathrm{SG}}^z/\chi_{\mathrm{tot}}^z$",
+    "chi_x_sg_ratio": r"$\chi_{\mathrm{SG}}^x/\chi_{\mathrm{tot}}^x$",
+    "chi_cg_ratio": r"$\chi_{\mathrm{CG}}/\chi_{\mathrm{tot}}$",
 }
 
 DERIVED = {
     "inv_gap": ("gap", lambda a: np.where(np.isclose(a, 0), np.nan, 1.0 / np.where(np.isclose(a, 0), 1.0, a))),
 }
-
 
 def get_auto_label(key, modifier=None):
     if key is None: return ""
@@ -85,45 +90,117 @@ def find_matching_file(target_config, data_dir):
     return None
 
 
-_SIGNS_CACHE = {}
+def translation_perms(lat, tol=1e-4):
+    """Site permutations of all lattice translations that map the cluster onto itself.
+
+    Returns an array (n_translations, N), identity included; perms[t][i] is the site that site i
+    is sent to by translation t. Built numerically from the primitive vectors (a1, a2) and the
+    periodic supercell (l1, l2) used by Lattice. A translation is kept only if every site lands on
+    a site of the same sublattice, so a cluster whose supercell is not commensurate with the
+    lattice just gets fewer translations (n_translations < N / 2 triggers a warning).
+    """
+    l1, l2 = get_latt_sizes(lat.cluster, lat.n_max)
+    a1, a2, _, _ = get_latt_vecs(lat.cell)
+    M_inv = np.linalg.inv(np.array([l1, l2]).T)
+
+    def wrap(pos):
+        c = pos @ M_inv.T
+        return c - np.floor(c + 1e-5)              # same [-1e-5, 1-1e-5) convention as Lattice
+
+    frac = wrap(lat.positions)
+    A_inv = np.linalg.inv(np.array([a1, a2]).T)
+    R = int(np.ceil(np.abs(A_inv @ np.array([l1, l2]).T).max())) + 1
+
+    perms = {}
+    for n1 in range(-R, R + 1):
+        for n2 in range(-R, R + 1):
+            d = wrap(lat.positions + n1 * a1 + n2 * a2)[:, None, :] - frac[None, :, :]
+            d -= np.round(d)                       # periodic distance in fractional coordinates
+            match = np.all(np.abs(d) < tol, axis=-1)
+            if not np.all(match.sum(axis=1) == 1):
+                continue                           # translation does not map the cluster onto itself
+            p = match.argmax(axis=1)
+            if len(set(p)) == lat.n_sites and np.all(lat.signs[p] == lat.signs):
+                perms[p.tobytes()] = p
+    out = np.array(list(perms.values()))
+    n_cells = lat.n_sites // len(get_latt_vecs(lat.cell)[2])
+    if len(out) < n_cells:
+        print(f"warning: only {len(out)} of {n_cells} translations are symmetries of this cluster; "
+              "chi_sg / chi_cg only remove order invariant under that subgroup")
+    return out
 
 
-def _sublattice_signs(cell, cluster, n_max):
-    key = (cell, cluster, tuple(int(n) for n in n_max))
-    if key not in _SIGNS_CACHE:
-        from ed.config import Config
-        from ed.lattice import Lattice
-        cfg = Config(cell=cell, cluster=cluster, n_max=list(key[2]))
-        _SIGNS_CACHE[key] = np.asarray(Lattice(cfg).signs, dtype=float)
-    return _SIGNS_CACHE[key]
+def one_point_means(C, total):
+    """<O_i> from the sum rule sum_j <O_i O_j> = total * <O_i> (fixed particle number or S^z_tot).
+    C: raw correlations (..., N, N). Returns zeros when total == 0, where <O_i> = 0 by symmetry."""
+    if not total:
+        return np.zeros(C.shape[:-1])
+    return C.sum(axis=-1) / total
 
 
-def _q_factors(C, signs):
-    """S(q=0) and S(q=pi) of a correlation matrix, or of a stack of them (n_samples, n, n)."""
-    return C.sum(axis=(-2, -1)), (C * np.outer(signs, signs)).sum(axis=(-2, -1))
+def glass_offdiag(corr, perms, total=0.0):
+    """chi = (1/N) sum_{q != q'} |C_c^(q, q')|^2 = (1/N) || C_c - P(C_c) ||_F^2, per sample.
+
+    C_c = <O_i O_j> - <O_i><O_j> is the connected correlation; <O_i> comes from the sum rule with
+    `total` (N_el for charge, S^z_tot for S^z). total = 0 means <O_i> = 0 (nothing subtracted).
+    P = average over all lattice translations, the orthogonal projector onto the translation-
+    invariant part, i.e. the q = q' (structure factor) block. It carries every coherent modulated
+    order at any Q, with any amplitude. What is left breaks translation symmetry.
+    corr: (..., N, N), stored as <O_i O_j> / N.
+    Returns (chi, chi / chi_tot) with chi_tot = (1/N) sum_ij |C_c|^2, so the ratio lies in [0, 1].
+    """
+    N = corr.shape[-1]
+    C = corr * N
+    m = one_point_means(C, total)
+    C = C - m[..., :, None] * m[..., None, :]
+    P = np.zeros_like(C)
+    for p in perms:
+        P += C[..., p[:, None], p[None, :]]
+    P /= len(perms)
+    off = np.sum((C - P) ** 2, axis=(-2, -1))
+    return off / N, off / np.sum(C ** 2, axis=(-2, -1))
 
 
-def _structure_factors(p, signs, filling):
-    n_sites = len(signs)
+def s_q0(corr):
+    """Sum over all spatial correlation elements (q=0 structure factor)."""
+    return np.sum(corr, axis=(-2, -1))
 
+
+def stagger(corr_mat, signs):
+    """Multiply correlation matrix by sublattice sign factors for q=pi."""
+    stagg_mat = signs[:, None] * signs[None, :]
+    return stagg_mat * corr_mat
+
+
+def s_qpi(corr, signs):
+    """Staggered sum over spatial correlation elements (q=pi structure factor)."""
+    return np.sum(stagger(corr, signs), axis=(-2, -1))
+
+
+def structure_factors(p, perms, signs, filling=None, sz=0.0):
+    """Per-sample observables (arrays over disorder samples); modifiers act on them in get_obs_val."""
     if "corr_sz" in p:
         C_sz = np.asarray(p["corr_sz"], dtype=float)
-        p["ss_z_q0"], p["ss_z_qpi"] = _q_factors(C_sz, signs)
-        p["chi_z_sg"] = np.sum((C_sz * n_sites)**2, axis=(-2, -1)) / n_sites
+        p["ss_z_q0"] = s_q0(C_sz)
+        p["ss_z_qpi"] = s_qpi(C_sz, signs)
+        if perms is not None:
+            p["chi_z_sg"], p["chi_z_sg_ratio"] = glass_offdiag(C_sz, perms, sz)
 
     if "corr_sx" in p:
         C_sx = np.asarray(p["corr_sx"], dtype=float)
-        p["ss_x_q0"], p["ss_x_qpi"] = _q_factors(C_sx, signs)
-        p["chi_x_sg"] = np.sum((C_sx * n_sites)**2, axis=(-2, -1)) / n_sites
+        p["ss_x_q0"] = s_q0(C_sx)
+        p["ss_x_qpi"] = s_qpi(C_sx, signs)
+        if perms is not None:   # <S^x_i> = 0 in an S^z_tot eigenstate, even for S^z_tot != 0
+            p["chi_x_sg"], p["chi_x_sg_ratio"] = glass_offdiag(C_sx, perms)
 
     if "corr_ch" in p:
         C_raw = np.asarray(p["corr_ch"], dtype=float)
-        p["sc_q0"], p["sc_qpi"] = _q_factors(C_raw, signs)
-
-        # <n_i> from sum_j <n_i n_j> = N_el <n_i>, with N_el = 2 * filling * n_sites fixed
-        n_i = C_raw.sum(axis=-1) / (2 * filling)
-        C_conn = C_raw - n_i[..., :, None] * n_i[..., None, :] / n_sites
-        p["chi_z_cg"] = np.sum((C_conn * n_sites)**2, axis=(-2, -1)) / n_sites
+        p["sc_q0"] = s_q0(C_raw)
+        p["sc_qpi"] = s_qpi(C_raw, signs)
+        if perms is not None and filling is not None:
+            p["chi_cg"], p["chi_cg_ratio"] = glass_offdiag(C_raw, perms, 2 * filling * C_raw.shape[-1])
+        elif perms is not None:
+            print("warning: no FILLING attribute, chi_cg unavailable (needs N_el for the connected part)")
 
 
 def load_data(data_dir, config, fixed_vars=None, x_key=None, xlim=None, y_key=None, ylim=None):
@@ -133,11 +210,25 @@ def load_data(data_dir, config, fixed_vars=None, x_key=None, xlim=None, y_key=No
     points = []
     with h5py.File(file_path, "r") as f:
         signs = None
-        if all(k in f.attrs for k in ("CELL", "CLUSTER", "N_MAX", "FILLING")):
+        perms = None
+        filling = float(f.attrs["FILLING"]) if "FILLING" in f.attrs else None
+        sz = float(f.attrs.get("SZ", f.attrs.get("sz", 0.0)))
+        if all(k in f.attrs for k in ("CELL", "CLUSTER", "N_MAX")):
             try:
-                signs = _sublattice_signs(str(f.attrs["CELL"]), str(f.attrs["CLUSTER"]), f.attrs["N_MAX"])
+                cfg_temp = Config(
+                    cell=str(f.attrs["CELL"]),
+                    cluster=str(f.attrs["CLUSTER"]),
+                    n_max=list(f.attrs["N_MAX"])
+                )
+                lat = Lattice(cfg_temp)
+                signs = np.asarray(lat.signs, dtype=float)
             except Exception as e:
-                print(f"warning: could not build lattice, structure factors unavailable ({e})")
+                print(f"warning: could not build lattice, staggered (q=pi) observables unavailable ({e})")
+            else:
+                try:
+                    perms = translation_perms(lat)
+                except Exception as e:
+                    print(f"warning: no translations, chi_sg / chi_cg unavailable ({e})")
 
         for grp in f.values():
             attrs_lower = {k.lower(): v for k, v in grp.attrs.items()}
@@ -150,7 +241,7 @@ def load_data(data_dir, config, fixed_vars=None, x_key=None, xlim=None, y_key=No
                         val = grp[k][()]
                         p[kl] = val.item() if isinstance(val, np.ndarray) and val.ndim == 0 else val
                 if signs is not None:
-                    _structure_factors(p, signs, float(f.attrs["FILLING"]))
+                    structure_factors(p, perms, signs, filling, sz)
                 points.append(p)
 
     if fixed_vars:
@@ -176,7 +267,7 @@ def nearest_grid(points, x_key, y_key, value_key, n=400, xlim=None, ylim=None):
     return xg, yg, vals[nearest].astype(float)
 
 
-def _find_value(p, key):
+def find_value(p, key):
     key = key.lower()
     candidates = [key, key + "_avg", key + "_mean"]
     if key == "chern":
@@ -187,15 +278,15 @@ def _find_value(p, key):
     return None
 
 
-def _get_obs_val(p, key, modifier='avg'):
+def get_obs_val(p, key, modifier='avg'):
     key = key.lower()
 
     transform = None
     if key in DERIVED:
         raw_key, transform = DERIVED[key]
-        val = _find_value(p, raw_key)
+        val = find_value(p, raw_key)
     else:
-        val = _find_value(p, key)
+        val = find_value(p, key)
     if val is None: return None
 
     val_arr = np.atleast_1d(np.array(val, dtype=float)).ravel()
@@ -203,6 +294,11 @@ def _get_obs_val(p, key, modifier='avg'):
         val_arr = transform(val_arr)
 
     if np.all(np.isnan(val_arr)): return np.nan
+    if isinstance(modifier, (int, np.integer)):    # n-th disorder realization (0-based), no averaging
+        return val_arr[modifier] if -len(val_arr) <= modifier < len(val_arr) else np.nan
+    if modifier == 'mode':                         # most frequent value, for integer observables (ties: smallest)
+        vals, counts = np.unique(val_arr[~np.isnan(val_arr)], return_counts=True)
+        return vals[counts.argmax()]
     avg = np.nanmean(val_arr)
 
     if modifier == 'avg' or key == 'chern': return avg
@@ -214,35 +310,57 @@ def _get_obs_val(p, key, modifier='avg'):
     return avg
 
 
-def _empty_panel(ax, msg="no data"):
+def as_list(modifier, n):
+    """One modifier (None, str or realization index) is repeated for all n observables."""
+    return [modifier] * n if modifier is None or isinstance(modifier, (str, int, np.integer)) else list(modifier)
+
+
+def diagnose(points, keys=("chi_z_sg", "chi_x_sg", "chi_cg"), modifiers=("avg", "std")):
+    """Print, per key, why a plot might be empty: missing data, no sample axis, NaN or zero values."""
+    print(f"{len(points)} points")
+    for key in keys:
+        corr_key = {"chi_z_sg": "corr_sz", "chi_x_sg": "corr_sx", "chi_cg": "corr_ch"}.get(key)
+        has_key = sum(key in p for p in points)
+        shapes = sorted({np.shape(p[corr_key]) for p in points if corr_key in p})[:3]
+        print(f"[{key}] in {has_key}/{len(points)} points | {corr_key} shapes (first 3): {shapes}")
+        for mod in modifiers:
+            vals = np.array([np.nan if (v := get_obs_val(p, key, mod)) is None else v for p in points], dtype=float)
+            fin = vals[np.isfinite(vals)]
+            msg = f"    {mod:>4}: finite {fin.size}/{vals.size}"
+            if fin.size:
+                msg += f" | min {fin.min():.3g} max {fin.max():.3g} | exactly zero: {np.sum(fin == 0)}"
+            print(msg)
+
+
+def empty_panel(ax, msg="no data"):
     ax.text(0.5, 0.5, msg, ha='center', va='center', transform=ax.transAxes)
     ax.set_xticks([])
     ax.set_yticks([])
 
 
-def plot_diagram(datasets, x_key, y_key, value_key, titles="", filename=None, cmap="hot", xlim=None, ylim=None, modifier='avg', log_cbar=False):
+def plot_diagram(datasets, x_key, y_key, value_key, labels=None, title="", filename=None, cmap="hot", xlim=None, ylim=None, modifier='avg', log_cbar=False):
     if datasets and isinstance(datasets[0], dict):
         datasets = [datasets]
 
     value_key = [value_key] if isinstance(value_key, str) else list(value_key)
     n_datasets, n_obs = len(datasets), len(value_key)
 
-    modifier = [modifier] * n_obs if isinstance(modifier, str) or modifier is None else list(modifier)
-    titles = [titles] * n_datasets if isinstance(titles, str) else titles
+    modifier = as_list(modifier, n_obs)
+    labels = [labels] * n_datasets if isinstance(labels, str) else labels
     log_cbar = [bool(log_cbar)] * n_obs if isinstance(log_cbar, (bool, np.bool_)) else [bool(b) for b in log_cbar]
 
     x_lbl, y_lbl = get_auto_label(x_key), get_auto_label(y_key)
     val_lbls = [get_auto_label(k, m) for k, m in zip(value_key, modifier)]
 
     n_rows, n_cols = (1, n_obs) if n_datasets == 1 else (n_obs, n_datasets)
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(8 * n_cols, 6 * n_rows), squeeze=False, layout='constrained')
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(6.3 * n_cols, 4.6 * n_rows), squeeze=False, layout='constrained')
 
     plot_data, obs_vals = {}, {i: [] for i in range(n_obs)}
     for d_idx, pts in enumerate(datasets):
         for o_idx, (v_key, mod) in enumerate(zip(value_key, modifier)):
             valid_pts = []
             for p in pts:
-                val = _get_obs_val(p, v_key, mod)
+                val = get_obs_val(p, v_key, mod)
                 if val is not None and not np.isnan(val) and not (log_cbar[o_idx] and val <= 0):
                     valid_pts.append({**p, v_key: val})
                     obs_vals[o_idx].append(val)
@@ -257,7 +375,7 @@ def plot_diagram(datasets, x_key, y_key, value_key, titles="", filename=None, cm
 
         vmin, vmax = min(vals), max(vals)
         kws = {'cmap': cmap}
-        is_integer = np.allclose(vals, np.round(vals), atol=1e-5)
+        is_integer = np.allclose(vals, np.round(vals), atol=1e-5) and not np.allclose(0., np.round(vals), atol=1e-6)
 
         if log_cbar[o_idx]:
             kws['norm'] = LogNorm(vmin=vmin, vmax=max(vmax, vmin * (1 + 1e-9)))
@@ -278,7 +396,7 @@ def plot_diagram(datasets, x_key, y_key, value_key, titles="", filename=None, cm
         if not kws:
             for d_idx in range(n_datasets):
                 ax = axes[0, o_idx] if n_datasets == 1 else axes[o_idx, d_idx]
-                _empty_panel(ax, f"no data for '{v_key}'")
+                empty_panel(ax, f"no data for '{v_key}'")
             continue
 
         draw_kws = {k: v for k, v in kws.items() if not k.startswith('cbar_')}
@@ -290,12 +408,12 @@ def plot_diagram(datasets, x_key, y_key, value_key, titles="", filename=None, cm
             obs_pts = plot_data[(d_idx, o_idx)]
 
             if not obs_pts:
-                _empty_panel(ax, f"no data for '{v_key}'")
+                empty_panel(ax, f"no data for '{v_key}'")
                 continue
 
             vals = [p[v_key] for p in obs_pts]
             xs, ys, grid = nearest_grid(obs_pts, x_key, y_key, v_key, xlim=xlim, ylim=ylim)
-            sz = 65 / (len(obs_pts) / 441.0)
+            sz = 45 / (len(obs_pts) / 441.0)
 
             ax.imshow(grid, origin="lower", extent=[xs[0], xs[-1], ys[0], ys[-1]], aspect="auto", zorder=1, **draw_kws)
             sc = ax.scatter([p[x_key] for p in obs_pts], [p[y_key] for p in obs_pts], c=vals, s=sz, edgecolors="black", linewidths=0.8, zorder=4, **draw_kws)
@@ -306,15 +424,17 @@ def plot_diagram(datasets, x_key, y_key, value_key, titles="", filename=None, cm
             if xlim: ax.set_xlim(xlim)
             if ylim: ax.set_ylim(ylim)
 
-            if n_datasets == 1 or o_idx == 0:
-                ax.set_title(titles[d_idx] if d_idx < len(titles) else titles[-1], pad=plt.rcParams["axes.titlesize"]//2)
+            if o_idx == 0:
+                ax.set_title(labels[d_idx], pad=plt.rcParams["axes.titlesize"] // 2)
 
         if last_sc is not None:
             cb_ax = axes[0, o_idx] if n_datasets == 1 else axes[o_idx, :].tolist()
             cbar = fig.colorbar(last_sc, ax=cb_ax, pad=0.015, **cb_kws)
             cbar.set_label(val_lbls[o_idx], fontsize=plt.rcParams['axes.labelsize'])
             cbar.ax.tick_params(labelsize=plt.rcParams['xtick.labelsize'])
-
+    if title:
+        fig.get_layout_engine().set(h_pad=0.1)
+        fig.suptitle(title, fontsize=plt.rcParams["axes.titlesize"] * 1.2)
     if filename:
         fig.savefig(IMAGES_DIR / filename, dpi=200, bbox_inches="tight")
         plt.close(fig)
@@ -332,7 +452,7 @@ def plot_1d_cut(datasets, x_key, value_key, title="", filename=None, colors=None
     if relative_std:
         modifier = ['rel_std'] * n_plots
     else:
-        modifier = [modifier] * n_plots if isinstance(modifier, str) or modifier is None else list(modifier)
+        modifier = as_list(modifier, n_plots)
 
     colors = colors if isinstance(colors, list) else [colors or COLOR_LIST[0]] * n_datasets
     labels = labels if isinstance(labels, list) else [labels] * n_datasets
@@ -358,8 +478,11 @@ def plot_1d_cut(datasets, x_key, value_key, title="", filename=None, colors=None
 
             valid = []
             for p in pts:
-                v = _get_obs_val(p, obs, mod)
-                err = _get_obs_val(p, obs + "_std", 'avg') if (obs + "_std") in p else _get_obs_val(p, obs, 'std')
+                v = get_obs_val(p, obs, mod)
+                if isinstance(mod, (int, np.integer)) or mod == 'mode':
+                    err = None                     # spread over realizations means nothing for one realization / the mode
+                else:
+                    err = get_obs_val(p, obs + "_std", 'avg') if (obs + "_std") in p else get_obs_val(p, obs, 'std')
 
                 if v is not None and np.isfinite(v):
                     valid.append((p[x_key], v, err))
@@ -395,10 +518,166 @@ def plot_1d_cut(datasets, x_key, value_key, title="", filename=None, colors=None
             ax.grid(True, linestyle='--', alpha=0.6)
             if any(labels) and p_idx == 0: ax.legend()
         else:
-            _empty_panel(ax, f"no data for '{obs}'")
+            empty_panel(ax, f"no data for '{obs}'")
 
     for ax in axes_flat[n_plots:]: ax.set_visible(False)
 
+    if filename:
+        fig.savefig(IMAGES_DIR / filename, dpi=200, bbox_inches="tight")
+        plt.close(fig)
+    else:
+        return fig, axes
+
+def get_obs_samples(p, key):
+    """Return the realization values of an observable."""
+    key = key.lower()
+    transform = None
+    if key in DERIVED:
+        raw_key, transform = DERIVED[key]
+        val = find_value(p, raw_key)
+    else:
+        val = find_value(p, key)
+
+    if val is None:
+        return np.array([], dtype=float)
+
+    values = np.atleast_1d(np.asarray(val, dtype=float)).ravel()
+    if transform is not None:
+        values = transform(values)
+    return values[np.isfinite(values)]
+
+
+def _normalise_param_points(param_points, x_key="u", y_key="v"):
+    """Convert selected point(s) to parameter dictionaries."""
+    if isinstance(param_points, dict):
+        return [dict(param_points)]
+    if isinstance(param_points, np.ndarray):
+        param_points = param_points.tolist()
+    if not isinstance(param_points, (list, tuple)):
+        raise TypeError("param_points must be a dict, an (x, y) pair, or a list of points")
+    if len(param_points) == 0:
+        raise ValueError("param_points cannot be empty")
+
+    if len(param_points) == 2 and all(
+        np.isscalar(item) and not isinstance(item, dict) for item in param_points
+    ):
+        return [{x_key: param_points[0], y_key: param_points[1]}]
+
+    selectors = []
+    for point in param_points:
+        if isinstance(point, dict):
+            selectors.append(dict(point))
+        else:
+            if isinstance(point, np.ndarray):
+                point = point.tolist()
+            if isinstance(point, (list, tuple)) and len(point) == 2:
+                selectors.append({x_key: point[0], y_key: point[1]})
+            else:
+                raise ValueError("Each point must be a dict or an (x, y) pair")
+    return selectors
+
+
+def _matches_param_selector(point, selector, rtol=1e-5, atol=1e-12):
+    for key, target in selector.items():
+        if key not in point:
+            return False
+        try:
+            matches = np.isclose(float(point[key]), float(target), rtol=rtol, atol=atol)
+        except (TypeError, ValueError):
+            matches = point[key] == target
+        if not matches:
+            return False
+    return True
+
+
+def _format_param_selector(selector):
+    def fmt(value):
+        try:
+            return f"{float(value):g}"
+        except (TypeError, ValueError):
+            return str(value)
+    return ", ".join(f"{key}={fmt(value)}" for key, value in selector.items())
+
+
+def plot_histograms(datasets, value_key, param_points, labels=None, title="", bins=20, density=True, filename=None):
+    """Plot realization-level histograms at selected parameter points."""
+    if datasets and isinstance(datasets[0], dict):
+        datasets = [datasets]
+    if not datasets:
+        raise ValueError("No datasets supplied")
+
+    value_keys = [value_key] if isinstance(value_key, str) else list(value_key)
+    if not value_keys:
+        raise ValueError("value_key cannot be empty")
+    selectors = _normalise_param_points(param_points)
+    n_datasets, n_points, n_obs = len(datasets), len(selectors), len(value_keys)
+
+    if labels is None:
+        labels = [f"Dataset {i + 1}" for i in range(n_datasets)]
+    elif isinstance(labels, str):
+        labels = [labels] * n_datasets
+    else:
+        labels = list(labels)
+    if len(labels) != n_datasets:
+        raise ValueError(f"Expected {n_datasets} labels, got {len(labels)}")
+
+    point_labels = [_format_param_selector(selector) for selector in selectors]
+    matched_points = {}
+    for d_idx, pts in enumerate(datasets):
+        for p_idx, selector in enumerate(selectors):
+            axes = [key for key in ("u", "v") if key in selector]
+            fixed = {key: val for key, val in selector.items() if key not in axes}
+            candidates = [p for p in pts if _matches_param_selector(p, fixed)]
+            if axes:
+                candidates = [p for p in candidates if all(key in p and np.isfinite(float(p[key])) for key in axes)]
+                if candidates:
+                    target = np.array([float(selector[key]) for key in axes])
+                    candidates = [min(candidates, key=lambda p: np.sum((np.array([float(p[key]) for key in axes]) - target) ** 2))]
+            else:
+                candidates = [p for p in pts if _matches_param_selector(p, selector)]
+            matched_points[(d_idx, p_idx)] = candidates[0] if candidates else None
+
+    fig, axes = plt.subplots(n_obs, n_datasets, figsize=(6.3 * n_datasets, 4.6 * n_obs), squeeze=False, layout="constrained")
+
+    for o_idx, obs in enumerate(value_keys):
+        all_values = [
+            get_obs_samples(matched_points[(d_idx, p_idx)], obs)
+            for d_idx in range(n_datasets)
+            for p_idx in range(n_points)
+            if matched_points[(d_idx, p_idx)] is not None
+        ]
+        all_values = [values for values in all_values if values.size]
+        bin_edges = None
+        if all_values:
+            pooled_values = np.concatenate(all_values)
+            bin_edges = np.histogram_bin_edges(pooled_values, bins=bins) if isinstance(bins, (int, np.integer, str)) else bins
+
+        for d_idx in range(n_datasets):
+            ax = axes[o_idx, d_idx]
+            has_data = False
+            for p_idx in range(n_points):
+                point = matched_points[(d_idx, p_idx)]
+                values = get_obs_samples(point, obs) if point is not None else np.array([])
+                if not values.size:
+                    continue
+                ax.hist(values, bins=bin_edges, density=density, histtype="stepfilled", alpha=0.3,
+                        label=point_labels[p_idx], color=COLOR_LIST[p_idx % len(COLOR_LIST)],
+                        edgecolor="black", linewidth=0.8)
+                has_data = True
+
+            if not has_data:
+                empty_panel(ax, f"no realization data for '{obs}'")
+            else:
+                ax.set_xlabel(get_auto_label(obs))
+                ax.set_ylabel("Probability density" if density else "Counts")
+                ax.grid(axis="y", linestyle="--", alpha=0.35)
+                ax.legend(fontsize=max(8, plt.rcParams["legend.fontsize"] - 2))
+            if o_idx == 0:
+                ax.set_title(labels[d_idx], pad=plt.rcParams["axes.titlesize"] // 2)
+
+    if title:
+        fig.get_layout_engine().set(h_pad=0.1)
+        fig.suptitle(title, fontsize=plt.rcParams["axes.titlesize"] * 1.2)
     if filename:
         fig.savefig(IMAGES_DIR / filename, dpi=200, bbox_inches="tight")
         plt.close(fig)

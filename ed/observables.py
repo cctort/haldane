@@ -19,6 +19,8 @@ class Observables:
         self.stag_dn = lattice.signs @ self.occ_dn
 
         self.n_flux = cfg.n_flux
+        self.flux_center = (0,0)
+        self.flux_power = 3.0
 
     def prob(self, psi):
         """|psi|^2 reshaped to (dim_dn, dim_up), normalized."""
@@ -84,15 +86,15 @@ class Observables:
         return corr_sx_mat / (2 * n_sites)
 
     def S_q0(self, corr):
-        return np.sum(corr)
+        return corr.sum(axis=(-2, -1))
 
-    def stagger(self, corr_mat):
-        stagg_mat = self.lattice.signs[:, None] * self.lattice.signs[None, :]
-        return stagg_mat * corr_mat
+    def stagger(self, corr):
+        signs = self.lattice.signs
+        return corr * np.outer(signs, signs)
 
     def S_qpi(self, corr):
         stagg_corr = self.stagger(corr)
-        return np.sum(stagg_corr)
+        return stagg_corr.sum(axis=(-2, -1))
 
     def density_matrix(self, psi):
         """
@@ -126,12 +128,14 @@ class Observables:
         Total (up+down) Chern number via Fukui-Hatsugai-Suzuki flux
         integration.
         """
-        angles = np.linspace(0, 2 * np.pi, self.n_flux, endpoint=False)
+        s = np.linspace(-1.0, 1.0, self.n_flux, endpoint=False)
+        grid1d = np.pi * np.sign(s) * np.abs(s) ** self.flux_power
+        angles_x, angles_y = self.flux_center[0] + grid1d, self.flux_center[1] + grid1d
         psi = [[None] * self.n_flux for _ in range(self.n_flux)]
 
         v0 = None
-        for ix, fx in enumerate(angles):
-            for iy, fy in enumerate(angles):
+        for ix, fx in enumerate(angles_x):
+            for iy, fy in enumerate(angles_y):
                 _, p = self.solver.ground_state(delta, U, V, fx, fy, v0, False, site_dis, bond_dis)
                 psi[ix][iy] = p
                 v0 = p
@@ -140,7 +144,7 @@ class Observables:
             braket = np.vdot(a, b)
             return braket / abs(braket)
 
-        curvature = 0.0
+        curvature, max_angle = 0.0, 0.0
         for ix in range(self.n_flux):
             ix2 = (ix + 1) % self.n_flux
             for iy in range(self.n_flux):
@@ -151,6 +155,8 @@ class Observables:
                     * np.conj(phase(psi[ix][iy2], psi[ix2][iy2]))
                     * np.conj(phase(psi[ix][iy], psi[ix][iy2]))
                 )
-                curvature += np.angle(plaquette)
-
-        return curvature / (2 * np.pi)
+                ang = np.angle(plaquette)
+                curvature += ang
+                max_angle = max(max_angle, abs(ang))
+            
+        return curvature / (2 * np.pi), max_angle
