@@ -22,8 +22,10 @@ class Config:
     # ED solver parameters
     tol: float = 0
 
-    # Flux grid per dimension
-    n_flux: int = 10
+    # Flux grid parameters for Chern number calculation
+    n_flux: int = 4
+    flux_max_refine: int = 2
+    flux_max_angle: float = 0.3
 
     # Disorder parameters
     n_samples: int = 1

@@ -46,11 +46,11 @@ BASE_LABELS = {
     "sc_q0": r"$\mathcal{N}(0,0)$",
     "sc_qpi": r"$\mathcal{N}(\pi,\pi)$",
     "chi_z_sg": r"$\chi_{\mathrm{SG}}^z$",
+    "chi_z_sg_off": r"$\chi_{\mathrm{SG,off}}^z$",
     "chi_x_sg": r"$\chi_{\mathrm{SG}}^x$",
+    "chi_x_sg_off": r"$\chi_{\mathrm{SG,off}}^x$",
     "chi_cg": r"$\chi_{\mathrm{CG}}$",
-    "chi_z_sg_ratio": r"$\chi_{\mathrm{SG}}^z/\chi_{\mathrm{tot}}^z$",
-    "chi_x_sg_ratio": r"$\chi_{\mathrm{SG}}^x/\chi_{\mathrm{tot}}^x$",
-    "chi_cg_ratio": r"$\chi_{\mathrm{CG}}/\chi_{\mathrm{tot}}$",
+    "chi_cg_off": r"$\chi_{\mathrm{CG,off}}$",
 }
 
 DERIVED = {
@@ -126,7 +126,7 @@ def translation_perms(lat, tol=1e-4):
     n_cells = lat.n_sites // len(get_latt_vecs(lat.cell)[2])
     if len(out) < n_cells:
         print(f"warning: only {len(out)} of {n_cells} translations are symmetries of this cluster; "
-              "chi_sg / chi_cg only remove order invariant under that subgroup")
+              "chi_*_sg_off only removes order invariant under that subgroup")
     return out
 
 
@@ -138,27 +138,23 @@ def one_point_means(C, total):
     return C.sum(axis=-1) / total
 
 
-def glass_offdiag(corr, perms, total=0.0):
-    """chi = (1/N) sum_{q != q'} |C_c^(q, q')|^2 = (1/N) || C_c - P(C_c) ||_F^2, per sample.
+def glass_chi(corr, perms, total=0.0):
+    """Connected squared correlations per sample, C_c = <O_i O_j> - <O_i><O_j>.
 
-    C_c = <O_i O_j> - <O_i><O_j> is the connected correlation; <O_i> comes from the sum rule with
-    `total` (N_el for charge, S^z_tot for S^z). total = 0 means <O_i> = 0 (nothing subtracted).
-    P = average over all lattice translations, the orthogonal projector onto the translation-
-    invariant part, i.e. the q = q' (structure factor) block. It carries every coherent modulated
-    order at any Q, with any amplitude. What is left breaks translation symmetry.
+    <O_i> comes from the sum rule with `total` (N_el for charge, S^z_tot for S^z); total = 0
+    means nothing is subtracted. P = average over all lattice translations, the orthogonal
+    projector onto the translation-invariant part (the q = q' block).
+    Returns (chi, chi_off):
+      chi     = (1/N) ||C_c||_F^2            full
+      chi_off = (1/N) ||C_c - P(C_c)||_F^2   non-translation-invariant part only
     corr: (..., N, N), stored as <O_i O_j> / N.
-    Returns (chi, chi / chi_tot) with chi_tot = (1/N) sum_ij |C_c|^2, so the ratio lies in [0, 1].
     """
     N = corr.shape[-1]
     C = corr * N
     m = one_point_means(C, total)
     C = C - m[..., :, None] * m[..., None, :]
-    P = np.zeros_like(C)
-    for p in perms:
-        P += C[..., p[:, None], p[None, :]]
-    P /= len(perms)
-    off = np.sum((C - P) ** 2, axis=(-2, -1))
-    return off / N, off / np.sum(C ** 2, axis=(-2, -1))
+    P = sum(C[..., p[:, None], p[None, :]] for p in perms) / len(perms)
+    return np.sum(C ** 2, axis=(-2, -1)) / N, np.sum((C - P) ** 2, axis=(-2, -1)) / N
 
 
 def s_q0(corr):
@@ -184,21 +180,21 @@ def structure_factors(p, perms, signs, filling=None, sz=0.0):
         p["ss_z_q0"] = s_q0(C_sz)
         p["ss_z_qpi"] = s_qpi(C_sz, signs)
         if perms is not None:
-            p["chi_z_sg"], p["chi_z_sg_ratio"] = glass_offdiag(C_sz, perms, sz)
+            p["chi_z_sg"], p["chi_z_sg_off"] = glass_chi(C_sz, perms, sz)
 
     if "corr_sx" in p:
         C_sx = np.asarray(p["corr_sx"], dtype=float)
         p["ss_x_q0"] = s_q0(C_sx)
         p["ss_x_qpi"] = s_qpi(C_sx, signs)
         if perms is not None:   # <S^x_i> = 0 in an S^z_tot eigenstate, even for S^z_tot != 0
-            p["chi_x_sg"], p["chi_x_sg_ratio"] = glass_offdiag(C_sx, perms)
+            p["chi_x_sg"], p["chi_x_sg_off"] = glass_chi(C_sx, perms)
 
     if "corr_ch" in p:
         C_raw = np.asarray(p["corr_ch"], dtype=float)
         p["sc_q0"] = s_q0(C_raw)
         p["sc_qpi"] = s_qpi(C_raw, signs)
         if perms is not None and filling is not None:
-            p["chi_cg"], p["chi_cg_ratio"] = glass_offdiag(C_raw, perms, 2 * filling * C_raw.shape[-1])
+            p["chi_cg"], p["chi_cg_off"] = glass_chi(C_raw, perms, 2 * filling * C_raw.shape[-1])
         elif perms is not None:
             print("warning: no FILLING attribute, chi_cg unavailable (needs N_el for the connected part)")
 
@@ -228,7 +224,7 @@ def load_data(data_dir, config, fixed_vars=None, x_key=None, xlim=None, y_key=No
                 try:
                     perms = translation_perms(lat)
                 except Exception as e:
-                    print(f"warning: no translations, chi_sg / chi_cg unavailable ({e})")
+                    print(f"warning: no translations, chi_*_sg_off / chi_cg_off unavailable ({e})")
 
         for grp in f.values():
             attrs_lower = {k.lower(): v for k, v in grp.attrs.items()}
@@ -315,11 +311,11 @@ def as_list(modifier, n):
     return [modifier] * n if modifier is None or isinstance(modifier, (str, int, np.integer)) else list(modifier)
 
 
-def diagnose(points, keys=("chi_z_sg", "chi_x_sg", "chi_cg"), modifiers=("avg", "std")):
+def diagnose(points, keys=("chi_z_sg", "chi_z_sg_off", "chi_x_sg", "chi_x_sg_off", "chi_cg", "chi_cg_off"), modifiers=("avg", "std")):
     """Print, per key, why a plot might be empty: missing data, no sample axis, NaN or zero values."""
     print(f"{len(points)} points")
     for key in keys:
-        corr_key = {"chi_z_sg": "corr_sz", "chi_x_sg": "corr_sx", "chi_cg": "corr_ch"}.get(key)
+        corr_key = {"z": "corr_sz", "x": "corr_sx", "c": "corr_ch"}[key[4]]   # chi_z_*, chi_x_*, chi_cg*
         has_key = sum(key in p for p in points)
         shapes = sorted({np.shape(p[corr_key]) for p in points if corr_key in p})[:3]
         print(f"[{key}] in {has_key}/{len(points)} points | {corr_key} shapes (first 3): {shapes}")
@@ -683,3 +679,33 @@ def plot_histograms(datasets, value_key, param_points, labels=None, title="", bi
         plt.close(fig)
     else:
         return fig, axes
+
+def plot_flux_grid(data):
+    """Berry curvature (plaquette flux) over the twist-angle BZ.
+    data: dict (observables.flux_data) or the NpzFile loaded from chern_grid.npz.
+    curvature[ix, iy] is the flux through the plaquette whose lower-left corner is (phi_x[ix], phi_y[iy])."""
+    px, py = data['phi_x'] / np.pi, data['phi_y'] / np.pi
+    # periodic closure: the last grid line is followed by the first one shifted by 2 (units of pi)
+    px_ext = np.append(px, px[0] + 2)
+    py_ext = np.append(py, py[0] + 2)
+    curv = data['curvature']
+    lim = max(np.abs(curv).max(), 1e-3)
+
+    fig, ax = plt.subplots(figsize=(6, 4.8), constrained_layout=True)
+    m = ax.pcolormesh(px_ext, py_ext, curv.T, cmap='RdBu_r', vmin=-lim, vmax=lim)
+    X, Y = np.meshgrid(px, py, indexing='ij')
+    ax.scatter(X, Y, s=8, c='k')
+    fig.colorbar(m, ax=ax, label='Berry curvature (plaquette flux, rad)')
+    ax.set_title(f'grid {len(px)}x{len(py)}, ' + r'$\mathcal{C}$' + f' = {float(data["chern"]):.4f}')
+
+    # point where the gap is measured
+    gx, gy = data['gap_phi'] / np.pi
+    if np.isfinite(gx):
+        ax.plot(gx, gy, '*', color='red', ms=16, mec='k', zorder=4, label='gap measured')
+        ax.legend(loc='upper right')
+    ax.set_xlim(px_ext[0], px_ext[-1])
+    ax.set_ylim(py_ext[0], py_ext[-1])
+    ax.set_aspect('equal')
+    ax.set_xlabel(r'$\phi_x/\pi$')
+    ax.set_ylabel(r'$\phi_y/\pi$')
+    return fig

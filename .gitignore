@@ -5,3 +5,5 @@ send.sh
 logs
 images
 literature
+*.npz
+*.png
