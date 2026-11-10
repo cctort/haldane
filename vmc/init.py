@@ -1,0 +1,1 @@
+from . import parallel  # must come first: sets the BLAS thread variables before numpy is imported
